@@ -8,11 +8,8 @@
 <body>
   <p>Redirecting to shared UI...</p>
   <script>
-    const target = "../../tier2-docker-compose/public/index.html";
-    const params = new URLSearchParams(window.location.search);
-    if (!params.get("tier")) params.set("tier", "tier5-kubernetes");
-    if (!params.get("stack")) params.set("stack", "Kubernetes");
-    window.location.replace(`${target}?${params.toString()}`);
+    sessionStorage.setItem("startup_x_selected_tier", "tier5-kubernetes");
+    window.location.replace("/tier2-docker-compose/public/");
   </script>
 </body>
 </html>

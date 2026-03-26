@@ -58,7 +58,6 @@ const runAddress = document.getElementById("runAddress");
 const dataSource = document.getElementById("dataSource");
 const tierName = document.getElementById("tierName");
 const stackName = document.getElementById("stackName");
-const tierLinks = document.getElementById("tierLinks");
 const envBadge = document.getElementById("envBadge");
 const appVersionEl = document.getElementById("appVersion");
 const totalProductsEl = document.getElementById("totalProducts");
@@ -72,6 +71,7 @@ const toastRoot = document.getElementById("toastRoot");
 let pendingDeleteId = null;
 let pendingAnimation = "";
 const RUNTIME_ENV_KEY = "startup_x_runtime_env";
+const TIER_CONTEXT_KEY = "startup_x_selected_tier";
 
 const TIER_CONFIG = [
   {
@@ -164,7 +164,7 @@ function setRuntimeInfo() {
   if (runAddress) {
     runAddress.textContent = window.location.protocol === "file:"
       ? "Local File"
-      : window.location.origin;
+      : window.location.host;
   }
   if (dataSource) {
     dataSource.textContent = "LocalStorage (browser)";
@@ -172,26 +172,25 @@ function setRuntimeInfo() {
 }
 
 function detectCurrentTier() {
-  const params = new URLSearchParams(window.location.search);
-  const tierParam = params.get("tier");
-  const stackParam = params.get("stack");
-
-  if (tierParam) {
-    const matchedByParam = TIER_CONFIG.find((item) => item.key === tierParam);
-    if (matchedByParam) {
-      return {
-        ...matchedByParam,
-        stack: stackParam || matchedByParam.stack
-      };
+  const tierFromSession = sessionStorage.getItem(TIER_CONTEXT_KEY);
+  if (tierFromSession) {
+    const matchedBySession = TIER_CONFIG.find((item) => item.key === tierFromSession);
+    if (matchedBySession) {
+      return matchedBySession;
     }
   }
 
   const normalized = window.location.pathname.toLowerCase().replace(/\\/g, "/");
-  return TIER_CONFIG.find((item) => normalized.includes(`/${item.key}/`)) || {
+  const matchedByPath = TIER_CONFIG.find((item) => normalized.includes(`/${item.key}`));
+  if (matchedByPath) {
+    sessionStorage.setItem(TIER_CONTEXT_KEY, matchedByPath.key);
+    return matchedByPath;
+  }
+
+  return {
     key: "unknown",
     label: "Unknown Tier",
-    stack: "Unknown Stack",
-    href: "#"
+    stack: "Unknown Stack"
   };
 }
 
@@ -204,14 +203,6 @@ function normalizeEnvironment(rawValue) {
 }
 
 function getRuntimeEnvironment() {
-  const params = new URLSearchParams(window.location.search);
-  const envFromQuery = params.get("env");
-  if (envFromQuery) {
-    const normalized = normalizeEnvironment(envFromQuery);
-    localStorage.setItem(RUNTIME_ENV_KEY, normalized);
-    return normalized;
-  }
-
   const envFromStorage = localStorage.getItem(RUNTIME_ENV_KEY);
   if (envFromStorage) {
     return normalizeEnvironment(envFromStorage);
@@ -234,29 +225,22 @@ function setVersionInfo() {
   appVersionEl.textContent = window.APP_UI_VERSION || "v0.0.0";
 }
 
-function buildTierHref(tier) {
-  const params = new URLSearchParams(window.location.search);
-  params.set("tier", tier.key);
-  params.set("stack", tier.stack);
-  params.set("env", getRuntimeEnvironment());
-  return `../../tier2-docker-compose/public/index.html?${params.toString()}`;
-}
-
 function setTierInfo() {
   const currentTier = detectCurrentTier();
+  if (currentTier.key !== "unknown") {
+    sessionStorage.setItem(TIER_CONTEXT_KEY, currentTier.key);
+    const cleanPath = `/${currentTier.key}`;
+    if (window.location.pathname !== cleanPath) {
+      window.history.replaceState({}, "", cleanPath);
+    }
+  }
+
   if (tierName) {
     tierName.textContent = currentTier.label;
   }
   if (stackName) {
     stackName.textContent = currentTier.stack;
   }
-
-  if (!tierLinks) return;
-
-  tierLinks.innerHTML = TIER_CONFIG.map((tier) => {
-    const isActive = tier.key === currentTier.key;
-    return `<a class="tier-link${isActive ? " is-active" : ""}" href="${buildTierHref(tier)}">${tier.label} - ${tier.stack}</a>`;
-  }).join("");
 }
 
 function currency(value) {
