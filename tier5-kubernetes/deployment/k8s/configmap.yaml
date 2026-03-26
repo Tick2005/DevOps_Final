@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: final-app-config
+  namespace: final-app
+data:
+  NODE_ENV: production

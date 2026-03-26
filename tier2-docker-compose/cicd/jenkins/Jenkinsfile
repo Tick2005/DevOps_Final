@@ -1,0 +1,65 @@
+pipeline {
+  agent any
+
+  environment {
+    BUILD_CONTAINER = 'true'
+    IMAGE_TAG = "${env.GIT_COMMIT}"
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Install') {
+      steps {
+        dir('tier2-docker-compose/backend') {
+          sh 'npm ci'
+        }
+      }
+    }
+
+    stage('Lint') {
+      steps {
+        dir('tier2-docker-compose/backend') {
+          sh 'npm run lint --if-present'
+        }
+      }
+    }
+
+    stage('Build') {
+      steps {
+        dir('tier2-docker-compose/backend') {
+          sh 'npm run build --if-present'
+          sh 'tar -czf ../../app-artifact.tgz .'
+        }
+      }
+    }
+
+    stage('Security Scan') {
+      steps {
+        sh 'trivy fs --exit-code 1 --severity HIGH,CRITICAL tier2-docker-compose/backend'
+      }
+    }
+
+    stage('Build and Push Image') {
+      when {
+        expression { env.BUILD_CONTAINER == 'true' }
+      }
+      steps {
+        sh 'echo Set registry login here'
+        sh 'docker build -t your-registry/final-app:${IMAGE_TAG} tier2-docker-compose/backend'
+        sh 'docker push your-registry/final-app:${IMAGE_TAG}'
+      }
+    }
+
+    stage('Deploy') {
+      steps {
+        sh 'chmod +x tier2-docker-compose/deployment/deploy-compose.sh'
+        sh 'tier2-docker-compose/deployment/deploy-compose.sh'
+      }
+    }
+  }
+}
