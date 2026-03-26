@@ -1,42 +1,75 @@
-# DevOps Final Project
+# DevOps Final Project (Tier-Based Layout)
 
-Production-oriented DevOps repository with an offline-ready frontend and folders for infrastructure, CI/CD, deployment, and monitoring artifacts.
+This repository is organized by architecture tier and matches the final exam direction.
 
-## Current Code State
+## Tier Folders
 
-- Frontend is fully local/offline (no CDN dependencies).
-- Data source in UI is LocalStorage.
-- UI supports product CRUD, responsive layouts, loader, custom modals, and toast notifications.
-- Backend folder is prepared for API implementation.
+- tier1-systemd/
+- tier2-docker-compose/ (current active implementation)
+- tier3-multi-server-lb/
+- tier4-docker-swarm/
+- tier5-kubernetes/
 
-## Folder Map
+Each tier includes the same required domains:
 
-- `public/`:
-	- Final frontend runtime files (`index.html`, assets, icons, JS, CSS).
-	- Open `public/index.html` directly to run UI.
-- `backend/`:
-	- Reserved for server/API code (Java service implementation by backend team).
-- `infrastructure/`:
-	- Terraform/Ansible/manual provisioning scripts and runbooks.
-- `cicd/`:
-	- Pipeline definitions for GitHub Actions, GitLab CI, or Jenkins.
-- `deployment/`:
-	- Deployment artifacts for the selected architecture tier.
-- `monitoring/`:
-	- Prometheus, Grafana dashboard exports, alerting configs.
+- backend/
+- public/
+- cicd/
+- infrastructure/
+- deployment/
+- monitoring/
 
-## Frontend Features (public)
+## Deployment File Naming Standard
 
-- Product add/edit/delete with custom confirmation modal.
-- Search + color filtering + pagination.
-- Responsive UI for phone/tablet/desktop.
-- Loader overlay and skeleton placeholders.
-- Toast notifications instead of blocking alerts.
-- Runtime indicators for run address and data mode.
+To keep grading and team collaboration consistent, each tier now has fixed deployment template names:
 
-## Suggested Next Backend Integration
+- Tier 1: app.service, deploy-systemd.sh, nginx.conf, .env.example
+- Tier 2: docker-compose.yml, docker-compose.prod.yml, deploy-compose.sh, nginx.conf, .env.example
+- Tier 3: load-balancer.conf, app-node-deploy.sh, inventory.ini, .env.example
+- Tier 4: docker-stack.yml, deploy-swarm.sh, swarm.env.example
+- Tier 5: deployment/k8s/namespace.yaml, deployment/k8s/deployment.yaml, deployment/k8s/service.yaml, deployment/k8s/ingress.yaml, deployment/k8s/configmap.yaml, deployment/k8s/secret.example.yaml, deployment/k8s/hpa.yaml, deploy-k8s.sh
 
-1. Build API inside `backend/` (e.g., Java Spring Boot).
-2. Replace LocalStorage calls in `public/assets/js/app.js` with API calls.
-3. Add pipeline and deployment files into `cicd/` and `deployment/tier2-docker-compose/`.
-4. Add monitoring configuration in `monitoring/`.
+## Current Active Tier
+
+tier2-docker-compose/ currently contains the implemented frontend and detailed subfolder documentation.
+
+## Frontend Placement by Tier
+
+- Tier 2 is the single source of UI: tier2-docker-compose/public/index.html
+- Tier 1/3/4/5 public/index.html files are lightweight redirect pages to Tier 2 UI.
+- Redirect pages preserve query params and inject default tier/stack if missing.
+- UI header shows active tier, stack, runtime environment badge, and app version.
+
+## Demo Version Bump Scripts
+
+For Section V demo flow (source change -> CI/CD update), use:
+
+- tier2-docker-compose/scripts/demo-version-bump.sh
+- tier2-docker-compose/scripts/demo-version-bump.ps1
+
+Both scripts update tier2-docker-compose/public/assets/js/version.js with:
+
+- APP_UI_VERSION (timestamp version)
+- APP_RUNTIME_ENV (staging/production/dev)
+
+## CI/CD Template Standard
+
+Each tier now includes the same CI/CD template format:
+
+- cicd/github-actions/ci.yml
+- cicd/github-actions/cd.yml
+- cicd/gitlab-ci/.gitlab-ci.yml
+- cicd/jenkins/Jenkinsfile
+
+## Monitoring Template Standard
+
+Each tier includes baseline monitoring templates:
+
+- monitoring/prometheus/prometheus.yml
+- monitoring/grafana/dashboards/system-overview.json
+
+## Usage Guidance
+
+1. Keep active development in one tier folder.
+2. Use other tiers as scaffolding or migration targets.
+3. Keep deployment artifacts only in their matching tier/deployment folder.

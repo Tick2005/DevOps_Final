@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redirecting to Tier 2 UI</title>
+</head>
+<body>
+  <p>Redirecting to shared UI...</p>
+  <script>
+    const target = "../../tier2-docker-compose/public/index.html";
+    const params = new URLSearchParams(window.location.search);
+    if (!params.get("tier")) params.set("tier", "tier5-kubernetes");
+    if (!params.get("stack")) params.set("stack", "Kubernetes");
+    window.location.replace(`${target}?${params.toString()}`);
+  </script>
+</body>
+</html>
