@@ -1,75 +1,41 @@
-# DevOps Final Project (Tier-Based Layout)
+# DevOps Final
 
-This repository is organized by architecture tier and matches the final exam direction.
+Fullstack Product Management demo dùng Docker Compose:
+- Frontend: React + Vite
+- Backend: Spring Boot
+- Database: MongoDB
 
-## Tier Folders
+## Chạy nhanh
+Yêu cầu: Docker Desktop đã chạy.
 
-- tier1-systemd/
-- tier2-docker-compose/ (current active implementation)
-- tier3-multi-server-lb/
-- tier4-docker-swarm/
-- tier5-kubernetes/
+```bash
+docker compose up -d --build
+```
 
-Each tier includes the same required domains:
+Truy cập:
+- App: http://localhost:5173
+- API: http://localhost:8080/api/products
 
-- backend/
-- public/
-- cicd/
-- infrastructure/
-- deployment/
-- monitoring/
+Dừng hệ thống:
 
-## Deployment File Naming Standard
+```bash
+docker compose down
+```
 
-To keep grading and team collaboration consistent, each tier now has fixed deployment template names:
+## Cấu trúc chính
 
-- Tier 1: app.service, deploy-systemd.sh, nginx.conf, .env.example
-- Tier 2: docker-compose.yml, docker-compose.prod.yml, deploy-compose.sh, nginx.conf, .env.example
-- Tier 3: load-balancer.conf, app-node-deploy.sh, inventory.ini, .env.example
-- Tier 4: docker-stack.yml, deploy-swarm.sh, swarm.env.example
-- Tier 5: deployment/k8s/namespace.yaml, deployment/k8s/deployment.yaml, deployment/k8s/service.yaml, deployment/k8s/ingress.yaml, deployment/k8s/configmap.yaml, deployment/k8s/secret.example.yaml, deployment/k8s/hpa.yaml, deploy-k8s.sh
+```text
+app/
+  backend/common/   # Spring Boot service
+  frontend/         # React + Vite UI
+docker-compose.yml
+```
 
-## Current Active Tier
+## Tính năng chính
+- CRUD sản phẩm
+- Hiển thị metadata runtime: host, source, tier, version
+- UI phân trang và popup chi tiết sản phẩm
 
-tier2-docker-compose/ currently contains the implemented frontend and detailed subfolder documentation.
-
-## Frontend Placement by Tier
-
-- Tier 2 is the single source of UI: tier2-docker-compose/public/index.html
-- Tier 1/3/4/5 public/index.html files are lightweight redirect pages to Tier 2 UI.
-- Redirect pages preserve query params and inject default tier/stack if missing.
-- UI header shows active tier, stack, runtime environment badge, and app version.
-
-## Demo Version Bump Scripts
-
-For Section V demo flow (source change -> CI/CD update), use:
-
-- tier2-docker-compose/scripts/demo-version-bump.sh
-- tier2-docker-compose/scripts/demo-version-bump.ps1
-
-Both scripts update tier2-docker-compose/public/assets/js/version.js with:
-
-- APP_UI_VERSION (timestamp version)
-- APP_RUNTIME_ENV (staging/production/dev)
-
-## CI/CD Template Standard
-
-Each tier now includes the same CI/CD template format:
-
-- cicd/github-actions/ci.yml
-- cicd/github-actions/cd.yml
-- cicd/gitlab-ci/.gitlab-ci.yml
-- cicd/jenkins/Jenkinsfile
-
-## Monitoring Template Standard
-
-Each tier includes baseline monitoring templates:
-
-- monitoring/prometheus/prometheus.yml
-- monitoring/grafana/dashboards/system-overview.json
-
-## Usage Guidance
-
-1. Keep active development in one tier folder.
-2. Use other tiers as scaffolding or migration targets.
-3. Keep deployment artifacts only in their matching tier/deployment folder.
+## Ghi chú
+- Host metadata được resolve động theo request/proxy, phù hợp nhiều môi trường deploy (localhost, domain, VM, cloud).
+- Dữ liệu mẫu được seed tự động khi khởi động backend.

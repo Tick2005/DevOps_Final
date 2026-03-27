@@ -1,0 +1,12 @@
+server:
+  port: ${PORT:8080}
+
+spring:
+  data:
+    mongodb:
+      uri: ${MONGODB_URI:mongodb://localhost:27017/startupx}
+      auto-index-creation: true
+
+app:
+  tier: ${APP_TIER:common}
+
