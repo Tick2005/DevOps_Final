@@ -2,43 +2,36 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: frontend
-  namespace: startupx
+  namespace: devops-final
   labels:
     app: frontend
-    tier: presentation
 spec:
   replicas: 2
   selector:
     matchLabels:
       app: frontend
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: frontend
-        tier: presentation
     spec:
       containers:
       - name: frontend
-        image: huytran905/startupx-frontend:latest  # Update with your image
+        image: YOUR_DOCKERHUB_USERNAME/product-management-frontend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 5173
           name: http
         env:
         - name: VITE_PROXY_TARGET
-          value: "http://backend-service:8080"
+          value: "http://backend-svc:8080"
         resources:
           requests:
-            memory: "256Mi"
-            cpu: "100m"
+            cpu: 100m
+            memory: 256Mi
           limits:
-            memory: "512Mi"
-            cpu: "250m"
+            cpu: 500m
+            memory: 512Mi
         livenessProbe:
           httpGet:
             path: /
@@ -55,3 +48,40 @@ spec:
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: devops-final
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 5173
+    protocol: TCP
+    name: http
+  selector:
+    app: frontend
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: frontend-hpa
+  namespace: devops-final
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: frontend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70

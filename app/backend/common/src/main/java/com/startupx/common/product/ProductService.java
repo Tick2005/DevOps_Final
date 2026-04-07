@@ -20,31 +20,31 @@ public class ProductService {
 
   public List<ProductResponse> listProducts(String host) {
     return repository.findAll().stream()
-      .map((doc) -> ProductResponse.from(doc, host, tier))
+      .map((entity) -> ProductResponse.from(entity, host, tier))
       .collect(Collectors.toList());
   }
 
   public ProductResponse createProduct(ProductRequest request, String host) {
-    ProductDocument product = mapRequest(new ProductDocument(), request);
+    ProductEntity product = mapRequest(new ProductEntity(), request);
     return ProductResponse.from(repository.save(product), host, tier);
   }
 
-  public ProductResponse updateProduct(String id, ProductRequest request, String host) {
-    ProductDocument existing = repository.findById(id)
+  public ProductResponse updateProduct(Long id, ProductRequest request, String host) {
+    ProductEntity existing = repository.findById(id)
       .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
 
-    ProductDocument updated = mapRequest(existing, request);
+    ProductEntity updated = mapRequest(existing, request);
     return ProductResponse.from(repository.save(updated), host, tier);
   }
 
-  public void deleteProduct(String id) {
+  public void deleteProduct(Long id) {
     if (!repository.existsById(id)) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
     }
     repository.deleteById(id);
   }
 
-  private ProductDocument mapRequest(ProductDocument target, ProductRequest request) {
+  private ProductEntity mapRequest(ProductEntity target, ProductRequest request) {
     target.setName(trim(request.getName()));
     target.setPrice(request.getPrice());
     target.setColor(trim(request.getColor()));
@@ -52,7 +52,7 @@ public class ProductService {
     target.setStock(request.getStock() == null ? 0L : request.getStock());
     target.setDescription(trim(request.getDescription()));
     target.setImage(trim(request.getImage()));
-    target.setSource("MongoDB");
+    target.setSource("PostgreSQL");
     return target;
   }
 

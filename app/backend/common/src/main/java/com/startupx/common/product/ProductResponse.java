@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProductResponse {
-  private String id;
+  private Long id;
   private String name;
   private double price;
   private String color;
@@ -18,29 +18,29 @@ public class ProductResponse {
   private String host;
   private String tier;
 
-  public static ProductResponse from(ProductDocument document) {
+  public static ProductResponse from(ProductEntity entity) {
     ProductResponse response = new ProductResponse();
-    response.id = document.getId();
-    response.name = document.getName();
-    response.price = document.getPrice();
-    response.color = document.getColor();
-    response.category = document.getCategory();
-    response.stock = document.getStock();
-    response.description = document.getDescription();
-    response.image = document.getImage();
-    response.createdAt = document.getCreatedAt();
-    response.source = document.getSource();
+    response.id = entity.getId();
+    response.name = entity.getName();
+    response.price = entity.getPrice();
+    response.color = entity.getColor();
+    response.category = entity.getCategory();
+    response.stock = entity.getStock();
+    response.description = entity.getDescription();
+    response.image = entity.getImage();
+    response.createdAt = entity.getCreatedAt();
+    response.source = entity.getSource();
     return response;
   }
 
-  public static ProductResponse from(ProductDocument document, String host, String tier) {
-    ProductResponse response = from(document);
+  public static ProductResponse from(ProductEntity entity, String host, String tier) {
+    ProductResponse response = from(entity);
     response.host = host;
     response.tier = tier;
     return response;
   }
 
-  public String getId() {
+  public Long getId() {
     return id;
   }
 

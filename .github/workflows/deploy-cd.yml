@@ -1,0 +1,88 @@
+name: CD - Deploy to EKS
+
+on:
+  repository_dispatch:
+    types: [deploy-trigger]
+  workflow_dispatch:
+    inputs:
+      backend_tag:
+        description: 'Backend image tag'
+        required: true
+        default: 'latest'
+      frontend_tag:
+        description: 'Frontend image tag'
+        required: true
+        default: 'latest'
+
+jobs:
+  deploy:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+
+      - name: Set image tags
+        id: tags
+        run: |
+          if [ "${{ github.event_name }}" == "repository_dispatch" ]; then
+            echo "backend_tag=${{ github.event.client_payload.backend_tag }}" >> $GITHUB_OUTPUT
+            echo "frontend_tag=${{ github.event.client_payload.frontend_tag }}" >> $GITHUB_OUTPUT
+          else
+            echo "backend_tag=${{ github.event.inputs.backend_tag }}" >> $GITHUB_OUTPUT
+            echo "frontend_tag=${{ github.event.inputs.frontend_tag }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Update backend deployment
+        run: |
+          kubectl set image deployment/backend \
+            backend=${{ secrets.DOCKERHUB_USERNAME }}/product-management-backend:${{ steps.tags.outputs.backend_tag }} \
+            -n devops-final
+
+      - name: Update frontend deployment
+        run: |
+          kubectl set image deployment/frontend \
+            frontend=${{ secrets.DOCKERHUB_USERNAME }}/product-management-frontend:${{ steps.tags.outputs.frontend_tag }} \
+            -n devops-final
+
+      - name: Restart deployments
+        run: |
+          kubectl rollout restart deployment/backend -n devops-final
+          kubectl rollout restart deployment/frontend -n devops-final
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/backend -n devops-final --timeout=5m
+          kubectl rollout status deployment/frontend -n devops-final --timeout=5m
+
+      - name: Verify deployment
+        run: |
+          echo "=== Backend Pods ==="
+          kubectl get pods -n devops-final -l app=backend
+          echo ""
+          echo "=== Frontend Pods ==="
+          kubectl get pods -n devops-final -l app=frontend
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -n devops-final
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress -n devops-final
+
+      - name: Get Load Balancer URL
+        run: |
+          echo "=== Application URL ==="
+          kubectl get ingress app-ingress -n devops-final -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""

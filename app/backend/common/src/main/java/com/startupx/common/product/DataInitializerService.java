@@ -19,7 +19,7 @@ public class DataInitializerService implements CommandLineRunner {
       return;
     }
 
-    List<ProductDocument> seedData = Arrays.asList(
+    List<ProductEntity> seedData = Arrays.asList(
       createProduct("Laptop Pro", 1299.99, "Silver", "Electronics", 15, "High-performance laptop", ""),
       createProduct("Wireless Mouse", 49.99, "Black", "Accessories", 120, "Ergonomic design", ""),
       createProduct("USB-C Cable", 19.99, "Black", "Cables", 200, "Fast charging cable", ""),
@@ -41,16 +41,16 @@ public class DataInitializerService implements CommandLineRunner {
     repository.saveAll(seedData);
   }
 
-  private ProductDocument createProduct(String name, double price, String color, String category, long stock, String description, String image) {
-    ProductDocument doc = new ProductDocument();
-    doc.setName(name);
-    doc.setPrice(price);
-    doc.setColor(color);
-    doc.setCategory(category);
-    doc.setStock(stock);
-    doc.setDescription(description);
-    doc.setImage(image);
-    doc.setSource("MongoDB");
-    return doc;
+  private ProductEntity createProduct(String name, double price, String color, String category, long stock, String description, String image) {
+    ProductEntity entity = new ProductEntity();
+    entity.setName(name);
+    entity.setPrice(price);
+    entity.setColor(color);
+    entity.setCategory(category);
+    entity.setStock(stock);
+    entity.setDescription(description);
+    entity.setImage(image);
+    entity.setSource("PostgreSQL");
+    return entity;
   }
 }

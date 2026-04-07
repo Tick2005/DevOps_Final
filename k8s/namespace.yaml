@@ -1,7 +1,7 @@
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: startupx
+  name: devops-final
   labels:
-    name: startupx
+    name: devops-final
     environment: production

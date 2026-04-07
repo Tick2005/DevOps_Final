@@ -1,0 +1,8 @@
+com\startupx\common\product\ProductRequest.class
+com\startupx\common\CommonApplication.class
+com\startupx\common\product\ProductController.class
+com\startupx\common\product\ProductRepository.class
+com\startupx\common\product\DataInitializerService.class
+com\startupx\common\product\ProductResponse.class
+com\startupx\common\product\ProductService.class
+com\startupx\common\product\ProductEntity.class

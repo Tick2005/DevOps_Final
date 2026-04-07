@@ -2,29 +2,22 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: backend
-  namespace: startupx
+  namespace: devops-final
   labels:
     app: backend
-    tier: application
 spec:
   replicas: 2
   selector:
     matchLabels:
       app: backend
-  strategy:
-    type: RollingUpdate
-    rollingUpdate:
-      maxSurge: 1
-      maxUnavailable: 0
   template:
     metadata:
       labels:
         app: backend
-        tier: application
     spec:
       containers:
       - name: backend
-        image: huytran905/startupx-backend:latest  # Update with your image
+        image: YOUR_DOCKERHUB_USERNAME/product-management-backend:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
@@ -35,26 +28,36 @@ spec:
             configMapKeyRef:
               name: app-config
               key: PORT
-        - name: MONGODB_URI
-          valueFrom:
-            configMapKeyRef:
-              name: app-config
-              key: MONGODB_URI
         - name: APP_TIER
           valueFrom:
             configMapKeyRef:
               name: app-config
               key: APP_TIER
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: DATABASE_URL
+        - name: DATABASE_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: DATABASE_USERNAME
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-secret
+              key: DATABASE_PASSWORD
         resources:
           requests:
-            memory: "512Mi"
-            cpu: "250m"
+            cpu: 250m
+            memory: 512Mi
           limits:
-            memory: "1Gi"
-            cpu: "500m"
+            cpu: 1000m
+            memory: 1Gi
         livenessProbe:
           httpGet:
-            path: /api/products
+            path: /actuator/health
             port: 8080
           initialDelaySeconds: 60
           periodSeconds: 10
@@ -62,9 +65,46 @@ spec:
           failureThreshold: 3
         readinessProbe:
           httpGet:
-            path: /api/products
+            path: /actuator/health
             port: 8080
           initialDelaySeconds: 30
           periodSeconds: 5
           timeoutSeconds: 3
           failureThreshold: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: devops-final
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: backend
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: backend-hpa
+  namespace: devops-final
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
