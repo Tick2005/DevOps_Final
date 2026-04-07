@@ -50,7 +50,7 @@ resource "aws_db_instance" "main" {
   allocated_storage     = 20
   max_allocated_storage = 100
   storage_type          = "gp3"
-  storage_encrypted     = true
+  storage_encrypted     = false  # Free tier doesn't support encryption
 
   db_name  = "productdb"
   username = var.rds_master_username
@@ -61,14 +61,10 @@ resource "aws_db_instance" "main" {
   vpc_security_group_ids = [aws_security_group.rds.id]
   publicly_accessible    = false
 
-  backup_retention_period = 1
-  backup_window          = "03:00-04:00"
-  maintenance_window     = "mon:04:00-mon:05:00"
+  backup_retention_period = 0  # Free tier: 0 days
   
   skip_final_snapshot       = true
   final_snapshot_identifier = "${local.name}-postgres-final-snapshot"
-  
-  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
   
   tags = local.tags
 }

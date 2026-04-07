@@ -55,7 +55,7 @@ variable "eks_node_max_size" {
 variable "rds_instance_class" {
   description = "RDS instance class"
   type        = string
-  default     = "db.t3.micro"
+  default     = "db.t4g.micro"  # ARM-based, free tier eligible
 }
 
 variable "rds_master_username" {

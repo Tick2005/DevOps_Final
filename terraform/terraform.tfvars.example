@@ -10,6 +10,6 @@ eks_node_desired_size  = 2
 eks_node_min_size      = 2
 eks_node_max_size      = 4
 
-rds_instance_class  = "db.t3.micro"
+rds_instance_class  = "db.t4g.micro"
 rds_master_username = "postgres"
 rds_master_password = "YourSecurePassword123!"
