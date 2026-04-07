@@ -1,0 +1,118 @@
+name: CD Pipeline
+
+on:
+  workflow_run:
+    workflows: ["CI Pipeline"]
+    types:
+      - completed
+    branches: [main]
+
+env:
+  REGISTRY: docker.io
+  BACKEND_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/startupx-backend
+  FRONTEND_IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/startupx-frontend
+
+jobs:
+  deploy:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install kubectl
+      uses: azure/setup-kubectl@v3
+      with:
+        version: 'v1.28.0'
+
+    - name: Configure kubectl
+      run: |
+        mkdir -p $HOME/.kube
+        echo "${{ secrets.KUBECONFIG }}" | base64 -d > $HOME/.kube/config
+        chmod 600 $HOME/.kube/config
+
+    - name: Verify cluster connection
+      run: |
+        kubectl cluster-info
+        kubectl get nodes
+
+    - name: Update image tags in manifests
+      run: |
+        # Update backend deployment
+        sed -i "s|image: .*startupx-backend.*|image: ${{ env.BACKEND_IMAGE_NAME }}:${{ github.sha }}|g" k8s/backend-deployment.yaml
+        
+        # Update frontend deployment
+        sed -i "s|image: .*startupx-frontend.*|image: ${{ env.FRONTEND_IMAGE_NAME }}:${{ github.sha }}|g" k8s/frontend-deployment.yaml
+
+    - name: Apply Kubernetes manifests
+      run: |
+        # Create namespace if not exists
+        kubectl apply -f k8s/namespace.yaml
+        
+        # Apply configurations
+        kubectl apply -f k8s/configmap.yaml
+        kubectl apply -f k8s/secret.yaml -n startupx || echo "Secret already exists"
+        
+        # Apply storage
+        kubectl apply -f k8s/mongodb-pvc.yaml
+        
+        # Deploy MongoDB
+        kubectl apply -f k8s/mongodb-deployment.yaml
+        kubectl apply -f k8s/mongodb-service.yaml
+        
+        # Wait for MongoDB to be ready
+        kubectl wait --for=condition=available --timeout=300s deployment/mongodb -n startupx
+        
+        # Deploy Backend
+        kubectl apply -f k8s/backend-deployment.yaml
+        kubectl apply -f k8s/backend-service.yaml
+        kubectl apply -f k8s/backend-hpa.yaml
+        
+        # Deploy Frontend
+        kubectl apply -f k8s/frontend-deployment.yaml
+        kubectl apply -f k8s/frontend-service.yaml
+        kubectl apply -f k8s/frontend-hpa.yaml
+        
+        # Apply Ingress
+        kubectl apply -f k8s/ingress.yaml
+
+    - name: Wait for deployments
+      run: |
+        kubectl wait --for=condition=available --timeout=300s deployment/backend -n startupx
+        kubectl wait --for=condition=available --timeout=300s deployment/frontend -n startupx
+
+    - name: Verify deployment
+      run: |
+        echo "=== Deployment Status ==="
+        kubectl get deployments -n startupx
+        
+        echo "=== Pod Status ==="
+        kubectl get pods -n startupx
+        
+        echo "=== Service Status ==="
+        kubectl get services -n startupx
+        
+        echo "=== Ingress Status ==="
+        kubectl get ingress -n startupx
+        
+        echo "=== HPA Status ==="
+        kubectl get hpa -n startupx
+
+    - name: Rollout status
+      run: |
+        kubectl rollout status deployment/backend -n startupx
+        kubectl rollout status deployment/frontend -n startupx
+
+    - name: Get deployment info
+      if: always()
+      run: |
+        echo "=== Recent Events ==="
+        kubectl get events -n startupx --sort-by='.lastTimestamp' | tail -20
+        
+        echo "=== Pod Logs (Backend) ==="
+        kubectl logs -n startupx -l app=backend --tail=50 || true
+        
+        echo "=== Pod Logs (Frontend) ==="
+        kubectl logs -n startupx -l app=frontend --tail=50 || true

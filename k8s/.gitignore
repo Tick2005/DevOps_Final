@@ -1,0 +1,6 @@
+# Ignore actual secrets (keep template only)
+secret.yaml
+
+# Ignore local kubeconfig
+kubeconfig
+*.kubeconfig

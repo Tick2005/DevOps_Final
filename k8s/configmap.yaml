@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: startupx
+data:
+  # Backend configuration
+  PORT: "8080"
+  APP_TIER: "kubernetes-production"
+  
+  # MongoDB connection (using service name)
+  MONGODB_URI: "mongodb://mongodb-service:27017/startupx"
+  
+  # Frontend configuration
+  VITE_API_URL: "http://backend-service:8080"
