@@ -8,7 +8,7 @@ Hệ thống quản lý sản phẩm với kiến trúc microservices triển kh
 - **Backend**: Spring Boot + PostgreSQL
 - **Infrastructure**: Amazon EKS (Kubernetes)
 - **CI/CD**: GitHub Actions
-- **Code Quality**: SonarCloud
+- **Code Quality**: SonarQube (self-hosted)
 - **Storage**: NFS Persistent Volume
 
 ## 📋 Yêu cầu
@@ -20,7 +20,7 @@ Hệ thống quản lý sản phẩm với kiến trúc microservices triển kh
 - kubectl
 - SSH key pair trên AWS
 - Docker Hub account
-- SonarCloud account (miễn phí cho public repos)
+- SonarQube server (sẽ được cài đặt tự động bằng Ansible)
 
 ## 🚀 Cài đặt nhanh
 
@@ -191,7 +191,7 @@ DevOps_Final/
 ## 🔄 Thay đổi so với kiến trúc mẫu
 
 1. **MongoDB → PostgreSQL**: DocumentDB không còn free tier
-2. **SonarQube → SonarCloud**: Miễn phí cho public repos, không cần quản lý server
+2. **SonarQube self-hosted**: Miễn phí hoàn toàn, hỗ trợ private repos
 3. **Application**: Document Management → Product Management (tránh trùng code)
 
 ## 📄 License

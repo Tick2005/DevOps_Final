@@ -18,7 +18,6 @@
 
   <properties>
     <java.version>17</java.version>
-    <sonar.organization>huytran2k5</sonar.organization>
   </properties>
 
   <dependencies>

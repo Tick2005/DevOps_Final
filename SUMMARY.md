@@ -10,7 +10,7 @@
 - ✅ Cập nhật docker-compose.yml
 
 ### 2. Thay đổi Code Quality
-- ✅ SonarQube Server → SonarCloud
+- ✅ Sử dụng SonarQube self-hosted
 - ✅ Tạo sonar-project.properties
 - ✅ Thêm Jacoco plugin cho code coverage
 - ✅ Cấu hình trong CI/CD pipeline
@@ -21,7 +21,7 @@
 - ✅ Kubernetes: Deployments, Services, Ingress, HPA, PV/PVC
 
 ### 4. CI/CD Pipelines
-- ✅ main-ci.yml: Build, Test, SonarCloud, Docker
+- ✅ main-ci.yml: Build, Test, SonarQube, Docker
 - ✅ deploy-cd.yml: Deploy to EKS
 
 ### 5. Automation Scripts
@@ -32,7 +32,7 @@
 - ✅ README.md: Hướng dẫn nhanh
 - ✅ HUONG_DAN_CHI_TIET.md: 10 phần chi tiết
 - ✅ AWS_RESOURCES_GUIDE.md: Giải thích AWS resources
-- ✅ SONARCLOUD_SETUP.md: Hướng dẫn SonarCloud
+- ✅ SONARQUBE_SETUP.md: Hướng dẫn SonarQube
 - ✅ CHANGELOG.md: Lịch sử thay đổi
 
 ## 📁 Cấu trúc Project
@@ -80,7 +80,7 @@ DevOps_Final/
 ├── README.md
 ├── HUONG_DAN_CHI_TIET.md
 ├── AWS_RESOURCES_GUIDE.md
-├── SONARCLOUD_SETUP.md
+├── SONARQUBE_SETUP.md
 ├── CHANGELOG.md
 └── SUMMARY.md
 ```
@@ -186,12 +186,12 @@ chmod +x cleanup.sh
 ## 🧪 Testing
 
 - ✅ Maven test trong CI
-- ✅ SonarCloud analysis
+- ✅ SonarQube analysis
 - ✅ Kubernetes health checks
 
 ## 📝 Next Steps
 
-1. Cấu hình SonarCloud (xem SONARCLOUD_SETUP.md)
+1. Cấu hình SonarQube (xem SONARQUBE_SETUP.md)
 2. Thêm GitHub Secrets
 3. Push code để trigger CI/CD
 4. Kiểm tra deployment
@@ -201,7 +201,7 @@ chmod +x cleanup.sh
 - [README.md](./README.md) - Hướng dẫn nhanh
 - [HUONG_DAN_CHI_TIET.md](./HUONG_DAN_CHI_TIET.md) - Hướng dẫn chi tiết
 - [AWS_RESOURCES_GUIDE.md](./AWS_RESOURCES_GUIDE.md) - AWS resources
-- [SONARCLOUD_SETUP.md](./SONARCLOUD_SETUP.md) - SonarCloud setup
+- [SONARQUBE_SETUP.md](./SONARQUBE_SETUP.md) - SonarQube setup
 - [CHANGELOG.md](./CHANGELOG.md) - Lịch sử thay đổi
 
 ---

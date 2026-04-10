@@ -27,8 +27,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # Cần cho SonarCloud
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -45,15 +43,15 @@ jobs:
         working-directory: ./app/backend/common
         run: mvn test
 
-      - name: SonarCloud Scan
+      - name: SonarQube Scan
         working-directory: ./app/backend/common
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
         run: |
           mvn sonar:sonar \
             -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
-            -Dsonar.organization=${{ secrets.SONAR_ORGANIZATION }} \
-            -Dsonar.host.url=https://sonarcloud.io \
+            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
             -Dsonar.token=${{ secrets.SONAR_TOKEN }}
 
       - name: Upload backend artifact

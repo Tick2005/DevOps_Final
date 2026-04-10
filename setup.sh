@@ -428,10 +428,14 @@ fi
 EKS_CLUSTER_ENDPOINT=$(terraform output -raw eks_cluster_endpoint)
 DB_NFS_PUBLIC_IP=$(terraform output -raw database_public_ip)
 DB_NFS_PRIVATE_IP=$(terraform output -raw database_private_ip)
+SONARQUBE_PUBLIC_IP=$(terraform output -raw sonarqube_public_ip 2>/dev/null || echo "N/A")
 KUBECONFIG_COMMAND=$(terraform output -raw configure_kubectl)
 
 print_success "EKS Cluster: $EKS_CLUSTER_NAME"
 print_success "DB+NFS IP: $DB_NFS_PUBLIC_IP"
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+    print_success "SonarQube IP: $SONARQUBE_PUBLIC_IP"
+fi
 
 cd ..
 
@@ -451,6 +455,18 @@ db-nfs ansible_host=${DB_NFS_PUBLIC_IP} ansible_user=ubuntu ansible_python_inter
 [nfs_server]
 db-nfs ansible_host=${DB_NFS_PUBLIC_IP} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
 
+EOF
+
+# Thêm SonarQube nếu có
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+cat >> ansible/inventory/hosts.ini << EOF
+[sonarqube]
+sonar-server ansible_host=${SONARQUBE_PUBLIC_IP} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+
+EOF
+fi
+
+cat >> ansible/inventory/hosts.ini << EOF
 [all:vars]
 ansible_ssh_private_key_file=${SSH_KEY_ABSOLUTE_PATH}
 ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
@@ -473,6 +489,17 @@ for i in {1..4}; do
     fi
     [ $i -lt 4 ] && sleep 5
 done
+
+# Wait for SonarQube (if exists)
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+    for i in {1..4}; do
+        if ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -i "$SSH_KEY_PATH" ubuntu@"$SONARQUBE_PUBLIC_IP" "echo 'OK'" &>/dev/null; then
+            print_success "SonarQube server SSH ready!"
+            break
+        fi
+        [ $i -lt 4 ] && sleep 5
+    done
+fi
 
 # =============================================================================
 # RUN ANSIBLE
@@ -522,7 +549,7 @@ kubectl wait --for=condition=Ready nodes --all --timeout=300s || {
 
 # Install AWS Load Balancer Controller CRDs
 print_info "Installing AWS Load Balancer Controller CRDs..."
-kubectl apply -k "github.com/aws/eks-charts/stable/aws-load-balancer-controller//crds?ref=master" || {
+kubectl apply -f https://raw.githubusercontent.com/aws/eks-charts/master/stable/aws-load-balancer-controller/crds/crds.yaml || {
     print_warning "Failed to install ALB Controller CRDs, may already exist"
 }
 
@@ -612,6 +639,21 @@ cat << EOF
    - PostgreSQL: ${DB_NFS_PRIVATE_IP}:5432
    - NFS: ${DB_NFS_PRIVATE_IP}:/srv/nfs/uploads
    - SSH: ssh -i ${SSH_KEY_PATH} ubuntu@${DB_NFS_PUBLIC_IP}
+EOF
+
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+cat << EOF
+
+🔍 SONARQUBE SERVER:
+   - Public IP: ${SONARQUBE_PUBLIC_IP}
+   - URL: http://${SONARQUBE_PUBLIC_IP}:9000
+   - Default Login: admin / admin
+   - SSH: ssh -i ${SSH_KEY_PATH} ubuntu@${SONARQUBE_PUBLIC_IP}
+   ⚠️  Đổi password ngay sau lần đăng nhập đầu tiên!
+EOF
+fi
+
+cat << EOF
 
 =============================================
 EOF
@@ -625,7 +667,7 @@ cat << EOF
 
 Vào GitHub repo → Settings → Secrets → Actions
 
-✅ SECRETS BẮT BUỘC (11 secrets):
+✅ SECRETS BẮT BUỘC (10 secrets):
 
 1. AWS_ACCESS_KEY_ID
    Giá trị: <your-aws-access-key-id>
@@ -657,16 +699,37 @@ Vào GitHub repo → Settings → Secrets → Actions
    Lấy từ: Docker Hub → Account Settings → Security
 
 9. SONAR_TOKEN
-   Giá trị: <your-sonarcloud-token>
-   Lấy từ: SonarCloud → My Account → Security → Generate Token
+   Giá trị: <your-sonarqube-token>
+   Lấy từ: SonarQube → Administration → Security → Users → Tokens
+EOF
 
-10. SONAR_ORGANIZATION
-    Giá trị: <your-sonarcloud-org>
-    Lấy từ: SonarCloud → Organization Key
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+cat << EOF
+   URL SonarQube: http://${SONARQUBE_PUBLIC_IP}:9000
+EOF
+fi
+
+cat << EOF
+
+10. SONAR_HOST_URL
+EOF
+
+if [ "$SONARQUBE_PUBLIC_IP" != "N/A" ]; then
+cat << EOF
+    Giá trị: http://${SONARQUBE_PUBLIC_IP}:9000
+EOF
+else
+cat << EOF
+    Giá trị: http://<SONARQUBE_IP>:9000
+EOF
+fi
+
+cat << EOF
+    Lấy từ: Terraform output hoặc EC2 Console
 
 11. SONAR_PROJECT_KEY
-    Giá trị: <your-sonarcloud-project-key>
-    Lấy từ: SonarCloud → Project Key
+    Giá trị: productx-backend
+    Lấy từ: SonarQube → Project Key (tạo trong SonarQube)
 
 💡 HƯỚNG DẪN THÊM SECRETS:
    1. Mở GitHub repository trong browser
@@ -676,7 +739,7 @@ Vào GitHub repo → Settings → Secrets → Actions
    5. Click "Add secret"
    6. Lặp lại cho tất cả 11 secrets
 
-📖 Chi tiết về SonarCloud: xem file SONARCLOUD_SETUP.md
+📖 Chi tiết về SonarQube: xem file SONARQUBE_SETUP.md
 
 =============================================
 EOF
@@ -688,12 +751,13 @@ cat << EOF
            📝 NEXT STEPS
 =============================================
 
-1️⃣  Cấu hình SonarCloud (nếu chưa có):
-   - Truy cập: https://sonarcloud.io
-   - Đăng nhập bằng GitHub
-   - Tạo Organization và Project
-   - Generate Token
-   - Xem chi tiết: SONARCLOUD_SETUP.md
+1️⃣  Cấu hình SonarQube:
+   - SonarQube đã được cài đặt trên EC2 instance
+   - Lấy IP: terraform output -raw sonarqube_public_ip
+   - Truy cập: http://<SONARQUBE_IP>:9000
+   - Login: admin / admin (đổi password ngay!)
+   - Tạo Project và Token
+   - Xem chi tiết: SONARQUBE_SETUP.md
 
 2️⃣  Thêm GitHub Secrets:
    - Vào repo → Settings → Secrets and variables → Actions

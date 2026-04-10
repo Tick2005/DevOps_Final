@@ -22,9 +22,9 @@
 - ✅ Health check endpoints với Spring Actuator
 
 #### CI/CD
-- ✅ GitHub Actions workflow cho CI (build, test, SonarCloud analysis)
+- ✅ GitHub Actions workflow cho CI (build, test, SonarQube analysis)
 - ✅ GitHub Actions workflow cho CD (deploy to EKS)
-- ✅ SonarCloud integration (thay thế SonarQube server)
+- ✅ SonarQube self-hosted integration
 - ✅ Docker image build và push to Docker Hub
 - ✅ Automatic deployment sau khi CI pass
 
@@ -48,7 +48,7 @@
 - ✅ README.md với hướng dẫn cài đặt nhanh
 - ✅ HUONG_DAN_CHI_TIET.md với hướng dẫn từng bước chi tiết
 - ✅ AWS_RESOURCES_GUIDE.md giải thích các AWS resources
-- ✅ SONARCLOUD_SETUP.md hướng dẫn cấu hình SonarCloud
+- ✅ SONARQUBE_SETUP.md hướng dẫn cấu hình SonarQube
 - ✅ File .env.example với tất cả biến môi trường cần thiết
 
 ### 🔄 Thay đổi so với kiến trúc mẫu
@@ -59,13 +59,12 @@
 - 📝 **Lý do**: DocumentDB không còn free tier, PostgreSQL phổ biến và mạnh mẽ hơn
 
 #### Code Quality
-- ❌ **Loại bỏ**: SonarQube Server (EC2 instance)
-- ✅ **Thay thế**: SonarCloud (managed service)
+- ✅ **Giữ lại**: SonarQube Server (EC2 instance)
 - 📝 **Lý do**: 
-  - Miễn phí cho public repositories
-  - Không cần quản lý server
-  - Tích hợp native với GitHub
-  - Tiết kiệm ~$30/tháng
+  - Miễn phí hoàn toàn cho mọi loại repository
+  - Hỗ trợ private repositories không giới hạn
+  - Toàn quyền kiểm soát và tùy chỉnh
+  - Phù hợp cho môi trường production
 
 #### Application
 - ❌ **Loại bỏ**: Document Management System

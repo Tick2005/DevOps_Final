@@ -43,8 +43,8 @@
                     │                  │                  │
                     ▼                  ▼                  ▼
             ┌──────────────┐   ┌──────────────┐  ┌──────────────┐
-            │  PostgreSQL  │   │  NFS Server  │  │  SonarCloud  │
-            │  (EC2)       │   │  (EC2)       │  │  (External)  │
+            │  PostgreSQL  │   │  NFS Server  │  │  SonarQube   │
+            │  (EC2)       │   │  (EC2)       │  │  (EC2)       │
             └──────────────┘   └──────────────┘  └──────────────┘
 ```
 
@@ -54,15 +54,15 @@
 - **Subnets**: 2 Public + 2 Private subnets trên 2 AZ
 - **EKS Cluster**: Kubernetes cluster với managed node group
 - **EC2 Instance**: Database (PostgreSQL) + NFS Server
+- **EC2 Instance**: SonarQube Server (code quality analysis)
 - **ALB**: Application Load Balancer cho routing
-- **SonarCloud**: Code quality analysis (thay thế SonarQube)
 
 ### 1.3. Thay đổi so với kiến trúc mẫu
 
 | Thành phần | Kiến trúc mẫu | Kiến trúc mới | Lý do |
 |------------|---------------|---------------|-------|
 | Database | MongoDB (DocumentDB) | PostgreSQL | DocumentDB không còn free tier |
-| Code Quality | SonarQube (EC2) | SonarCloud | Miễn phí cho public repos, không cần quản lý server |
+| Code Quality | SonarQube (EC2) | SonarQube (EC2) | Miễn phí hoàn toàn, hỗ trợ private repos |
 | Application | Document Management | Product Management | Tránh trùng code |
 
 ---
@@ -74,7 +74,6 @@
 - ✅ AWS Account (Free Tier hoặc có credit)
 - ✅ GitHub Account
 - ✅ Docker Hub Account
-- ✅ SonarCloud Account (đăng ký tại https://sonarcloud.io)
 
 ### 2.2. Máy tính cá nhân
 
@@ -264,9 +263,9 @@ DB_NAME_STAGING=productx_db_staging
 DB_USER_PROD=productx_user
 DB_USER_STAGING=productx_staging_user
 
-# SonarCloud Configuration
-SONAR_ORGANIZATION=your-org-name
-SONAR_PROJECT_KEY=your-project-key
+# SonarQube Configuration
+SONAR_HOST_URL=http://your-sonarqube-ip:9000
+SONAR_PROJECT_KEY=productx-backend
 SONAR_TOKEN=your-sonar-token
 
 # Docker Hub
@@ -277,21 +276,18 @@ DOMAIN_NAME=
 ENABLE_HTTPS=false
 ```
 
-### 5.3. Cấu hình SonarCloud
+### 5.3. Cấu hình SonarQube
 
-1. Truy cập https://sonarcloud.io
-2. Đăng nhập bằng GitHub
-3. **Create Organization**:
-   - Chọn GitHub organization hoặc tạo mới
-   - Lưu lại tên organization
-4. **Create Project**:
-   - Import repository từ GitHub
-   - Hoặc tạo project manually
-   - Lưu lại Project Key
-5. **Generate Token**:
-   - Vào **My Account** → **Security** → **Generate Tokens**
-   - Đặt tên: `productx-ci`
-   - Lưu lại token
+SonarQube sẽ được cài đặt tự động bằng Ansible sau khi chạy Terraform.
+
+Chi tiết cấu hình xem tại: [SONARQUBE_SETUP.md](./SONARQUBE_SETUP.md)
+
+Tóm tắt:
+1. SonarQube server sẽ chạy trên EC2 instance riêng
+2. Truy cập: `http://<SONARQUBE_PUBLIC_IP>:9000`
+3. Login: admin / admin (đổi password sau lần đầu)
+4. Tạo project và token
+5. Cập nhật GitHub Secrets
 
 ---
 
@@ -387,9 +383,9 @@ Thêm các secrets sau:
 | `DB_PASSWORD` | Password trong .env | |
 | `DOCKER_USERNAME` | Docker Hub username | |
 | `DOCKER_PASSWORD` | Docker Hub password | |
-| `SONAR_TOKEN` | Token từ SonarCloud | |
-| `SONAR_ORGANIZATION` | Organization name | |
-| `SONAR_PROJECT_KEY` | Project key | |
+| `SONAR_TOKEN` | Token từ SonarQube | |
+| `SONAR_HOST_URL` | URL SonarQube server | `http://<IP>:9000` |
+| `SONAR_PROJECT_KEY` | Project key | `productx-backend` |
 
 ### 7.2. Trigger CI/CD
 
@@ -589,12 +585,13 @@ kubectl describe ingress app-ingress -n productx
 
 **Kiểm tra:**
 - GitHub Actions logs
-- SonarCloud analysis results
+- SonarQube analysis results
 - Docker Hub images
 
 **Xử lý:**
 - Kiểm tra GitHub Secrets đã đầy đủ
-- Kiểm tra SonarCloud token còn hiệu lực
+- Kiểm tra SonarQube token còn hiệu lực
+- Kiểm tra SonarQube server đang chạy
 - Kiểm tra Docker Hub credentials
 
 ---
@@ -637,7 +634,7 @@ chmod +x cleanup.sh
 - [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
 - [Ansible Documentation](https://docs.ansible.com/)
 - [Kubernetes Documentation](https://kubernetes.io/docs/)
-- [SonarCloud Documentation](https://docs.sonarcloud.io/)
+- [SonarQube Documentation](https://docs.sonarqube.org/)
 - [Spring Boot Documentation](https://spring.io/projects/spring-boot)
 - [React Documentation](https://react.dev/)
 

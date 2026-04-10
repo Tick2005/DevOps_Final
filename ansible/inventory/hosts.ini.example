@@ -12,6 +12,10 @@ db-server ansible_host=REPLACE_WITH_DATABASE_PUBLIC_IP ansible_user=ubuntu
 # NFS Server (cùng server với database)
 db-server ansible_host=REPLACE_WITH_DATABASE_PUBLIC_IP ansible_user=ubuntu
 
+[sonarqube]
+# SonarQube Server (EC2 instance riêng)
+sonar-server ansible_host=REPLACE_WITH_SONARQUBE_PUBLIC_IP ansible_user=ubuntu
+
 [all:vars]
 ansible_python_interpreter=/usr/bin/python3
 ansible_ssh_common_args='-o StrictHostKeyChecking=no'
