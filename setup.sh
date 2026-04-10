@@ -28,6 +28,17 @@ print_header "1. Kiểm tra & Cài đặt Prerequisites"
 
 NEED_INSTALL=false
 
+# Detect OS
+if [ -f /etc/os-release ]; then
+    . /etc/os-release
+    OS=$ID
+    OS_VERSION=$VERSION_ID
+else
+    OS="unknown"
+fi
+
+print_info "Detected OS: $OS"
+
 # --- Check Terraform ---
 if command -v terraform &> /dev/null; then
     print_success "Terraform: $(terraform version | head -n1)"
@@ -73,8 +84,31 @@ else
     NEED_INSTALL=true
     
     sudo apt-get update -qq
-    sudo apt-get install -y ansible python3-pip
-    pip3 install boto3 botocore
+    
+    # Cài Ansible và Python packages từ apt (recommended)
+    print_info "Cài đặt Ansible và dependencies từ apt..."
+    sudo apt-get install -y ansible python3-pip python3-boto3 python3-botocore 2>/dev/null || {
+        # Fallback: nếu không có python3-boto3 trong repo
+        print_warning "python3-boto3 không có trong repo, cài từ pip..."
+        sudo apt-get install -y ansible python3-pip
+        
+        # Dùng --break-system-packages cho Python 3.11+
+        pip3 install boto3 botocore --break-system-packages 2>/dev/null || {
+            # Fallback: dùng pipx
+            print_warning "Thử cài bằng pipx..."
+            sudo apt-get install -y pipx
+            pipx install boto3
+            pipx install botocore
+        }
+    }
+    
+    # Verify boto3 installation
+    if python3 -c "import boto3" 2>/dev/null; then
+        print_success "boto3 đã được cài đặt"
+    else
+        print_warning "boto3 chưa được cài đặt, Ansible AWS modules có thể không hoạt động"
+        print_info "Bạn có thể cài thủ công: sudo apt install python3-boto3 python3-botocore"
+    fi
     
     print_success "Ansible đã cài đặt: $(ansible --version | head -n1)"
 fi
