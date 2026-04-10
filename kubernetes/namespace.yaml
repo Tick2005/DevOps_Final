@@ -1,0 +1,10 @@
+# =============================================================================
+# NAMESPACE.YAML - Tạo namespace cho ứng dụng
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: productx
+  labels:
+    name: productx
+    environment: production

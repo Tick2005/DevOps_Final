@@ -1,0 +1,136 @@
+# =============================================================================
+# DEPLOY-CD.YML - CD Pipeline cho Production
+# =============================================================================
+# Trigger: Workflow dispatch (manual) hoặc sau khi main-ci hoàn thành
+# Actions: Deploy to EKS Production
+# =============================================================================
+
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (leave empty for latest)'
+        required: false
+        type: string
+  workflow_run:
+    workflows: ["Main CI Pipeline"]
+    types:
+      - completed
+    branches: [main]
+
+env:
+  AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+
+jobs:
+  deploy-production:
+    name: Deploy to EKS Production
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+
+      - name: Download image tag artifact (if from CI)
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: image-tag
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Set image tag
+        id: image_tag
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.image_tag }}" ]; then
+            echo "IMAGE_TAG=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
+          elif [ -f image-tag.txt ]; then
+            echo "IMAGE_TAG=$(cat image-tag.txt)" >> $GITHUB_OUTPUT
+          else
+            echo "IMAGE_TAG=latest" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create namespace if not exists
+        run: |
+          kubectl apply -f kubernetes/namespace.yaml
+
+      - name: Update ConfigMap with DB and NFS IPs
+        run: |
+          sed -i "s/PLACEHOLDER_DB_HOST/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/configmap.yaml
+          sed -i "s/PLACEHOLDER_NFS_SERVER/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/configmap.yaml
+          kubectl apply -f kubernetes/configmap.yaml
+
+      - name: Update Secrets
+        run: |
+          sed -i "s/PLACEHOLDER_DB_PASSWORD/${{ secrets.DB_PASSWORD }}/g" kubernetes/secrets.yaml
+          kubectl apply -f kubernetes/secrets.yaml
+
+      - name: Update NFS PV
+        run: |
+          sed -i "s/PLACEHOLDER_NFS_SERVER/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/nfs-pv.yaml
+          kubectl apply -f kubernetes/nfs-pv.yaml
+
+      - name: Update Backend Deployment
+        run: |
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" kubernetes/backend-deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${{ steps.image_tag.outputs.IMAGE_TAG }}|g" kubernetes/backend-deployment.yaml
+          kubectl apply -f kubernetes/backend-deployment.yaml
+
+      - name: Update Frontend Deployment
+        run: |
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" kubernetes/frontend-deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${{ steps.image_tag.outputs.IMAGE_TAG }}|g" kubernetes/frontend-deployment.yaml
+          kubectl apply -f kubernetes/frontend-deployment.yaml
+
+      - name: Apply HPA
+        run: kubectl apply -f kubernetes/hpa.yaml
+
+      - name: Apply Ingress
+        run: kubectl apply -f kubernetes/ingress.yaml
+
+      - name: Wait for deployments to be ready
+        run: |
+          kubectl rollout status deployment/backend -n productx --timeout=5m
+          kubectl rollout status deployment/frontend -n productx --timeout=5m
+
+      - name: Get deployment info
+        run: |
+          echo "=== Pods ==="
+          kubectl get pods -n productx
+          echo ""
+          echo "=== Services ==="
+          kubectl get svc -n productx
+          echo ""
+          echo "=== Ingress ==="
+          kubectl get ingress -n productx
+          echo ""
+          echo "=== HPA ==="
+          kubectl get hpa -n productx
+
+      - name: Get ALB URL
+        id: alb_url
+        run: |
+          ALB_URL=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          echo "ALB_URL=$ALB_URL" >> $GITHUB_OUTPUT
+          echo "Application URL: http://$ALB_URL"
+
+      - name: Deployment summary
+        run: |
+          echo "✅ Deployment completed successfully!"
+          echo "Image Tag: ${{ steps.image_tag.outputs.IMAGE_TAG }}"
+          echo "Application URL: http://${{ steps.alb_url.outputs.ALB_URL }}"

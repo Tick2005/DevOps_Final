@@ -1,15 +1,17 @@
 services:
-  mongo:
-    image: mongo:7
+  postgres:
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      MONGO_INITDB_DATABASE: startupx
+      POSTGRES_DB: productx_db
+      POSTGRES_USER: productx_user
+      POSTGRES_PASSWORD: SecurePassword123!
     ports:
-      - "27017:27017"
+      - "5432:5432"
     volumes:
-      - mongo_data:/data/db
+      - postgres_data:/var/lib/postgresql/data
     healthcheck:
-      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      test: ["CMD-SHELL", "pg_isready -U productx_user -d productx_db"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -20,12 +22,14 @@ services:
     restart: unless-stopped
     environment:
       PORT: 8080
-      MONGODB_URI: mongodb://mongo:27017/startupx
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/productx_db
+      SPRING_DATASOURCE_USERNAME: productx_user
+      SPRING_DATASOURCE_PASSWORD: SecurePassword123!
       APP_TIER: docker-compose-fullstack
     ports:
       - "8080:8080"
     depends_on:
-      mongo:
+      postgres:
         condition: service_healthy
 
   frontend:
@@ -40,4 +44,4 @@ services:
       - backend
 
 volumes:
-  mongo_data:
+  postgres_data:

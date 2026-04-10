@@ -5,7 +5,7 @@ import java.time.LocalDateTime;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProductResponse {
-  private String id;
+  private Long id;
   private String name;
   private double price;
   private String color;
@@ -40,7 +40,7 @@ public class ProductResponse {
     return response;
   }
 
-  public String getId() {
+  public Long getId() {
     return id;
   }
 

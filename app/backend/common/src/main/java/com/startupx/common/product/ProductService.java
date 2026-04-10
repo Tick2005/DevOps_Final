@@ -29,7 +29,7 @@ public class ProductService {
     return ProductResponse.from(repository.save(product), host, tier);
   }
 
-  public ProductResponse updateProduct(String id, ProductRequest request, String host) {
+  public ProductResponse updateProduct(Long id, ProductRequest request, String host) {
     ProductDocument existing = repository.findById(id)
       .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
 
@@ -37,7 +37,7 @@ public class ProductService {
     return ProductResponse.from(repository.save(updated), host, tier);
   }
 
-  public void deleteProduct(String id) {
+  public void deleteProduct(Long id) {
     if (!repository.existsById(id)) {
       throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found");
     }
@@ -52,7 +52,7 @@ public class ProductService {
     target.setStock(request.getStock() == null ? 0L : request.getStock());
     target.setDescription(trim(request.getDescription()));
     target.setImage(trim(request.getImage()));
-    target.setSource("MongoDB");
+    target.setSource("PostgreSQL");
     return target;
   }
 
