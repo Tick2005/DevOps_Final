@@ -362,7 +362,7 @@ resource "aws_eks_node_group" "main" {
 # =============================================================================
 resource "aws_instance" "database" {
   ami                    = var.ubuntu_ami
-  instance_type          = "t3.medium"
+  instance_type          = "t3.small"
   key_name               = var.key_name
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.database.id]
