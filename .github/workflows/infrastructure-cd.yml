@@ -252,47 +252,6 @@ jobs:
         timeout-minutes: 45
         run: terraform apply -auto-approve tfplan
       
-      - name: Wait for EKS Cluster Ready
-        run: |
-          echo "⏳ Waiting for EKS cluster to be fully ready..."
-          
-          # Update kubeconfig
-          aws eks update-kubeconfig \
-            --name ${{ secrets.EKS_CLUSTER_NAME }} \
-            --region ${{ env.AWS_REGION }}
-          
-          # Wait for cluster to be accessible
-          for i in {1..30}; do
-            if kubectl cluster-info &>/dev/null; then
-              echo "✅ EKS cluster is ready!"
-              break
-            fi
-            echo "  Waiting for cluster... ($i/30)"
-            sleep 10
-          done
-          
-          # Verify nodes are ready
-          kubectl get nodes
-          kubectl get pods -n kube-system
-      
-      - name: Install AWS Load Balancer Controller
-        working-directory: terraform
-        run: |
-          echo "📦 Installing AWS Load Balancer Controller via Terraform..."
-          
-          # Now cluster is ready, we can apply Helm chart
-          terraform apply -auto-approve \
-            -target=null_resource.install_aws_load_balancer_controller \
-            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
-            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
-            -var="enable_https=${{ secrets.DOMAIN_NAME != '' && 'true' || 'false' }}"
-          
-          echo "✅ AWS Load Balancer Controller installed"
-          
-          # Verify installation
-          kubectl get deployment -n kube-system aws-load-balancer-controller
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-      
       - name: Export Terraform Outputs
         id: outputs
         working-directory: terraform
