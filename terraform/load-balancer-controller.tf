@@ -11,6 +11,21 @@
 data "aws_caller_identity" "current" {}
 
 # =============================================================================
+# DATA SOURCE - Wait for EKS cluster to be ready
+# =============================================================================
+data "aws_eks_cluster" "cluster" {
+  name = module.eks.cluster_name
+  
+  depends_on = [module.eks]
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.cluster_name
+  
+  depends_on = [module.eks]
+}
+
+# =============================================================================
 # IAM ROLE - Service Account for Load Balancer Controller
 # =============================================================================
 module "aws_load_balancer_controller_irsa" {
@@ -107,3 +122,4 @@ resource "helm_release" "aws_load_balancer_controller" {
     data.aws_eks_cluster_auth.cluster
   ]
 }
+
