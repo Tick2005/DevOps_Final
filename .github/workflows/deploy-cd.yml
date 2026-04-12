@@ -11,6 +11,17 @@ on:
     workflows: ["Build & Release Docker"]
     types:
       - completed
+  
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+      reason:
+        description: 'Reason for manual deployment'
+        required: false
+        default: 'Manual trigger'
 
 env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
@@ -23,7 +34,7 @@ jobs:
   deploy:
     name: Deploy Application to EKS
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     
     environment:
       name: production
@@ -33,7 +44,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -51,25 +62,36 @@ jobs:
 
       - name: Update Deployment Images
         run: |
-          COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
-          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
-          
-          echo "📦 Deploying commit: $COMMIT_SHA"
-          echo "📦 Image tag: sha-${SHORT_SHA}"
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger: use input tag
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            echo "🔧 Manual deployment triggered"
+            echo "📦 Using image tag: $IMAGE_TAG"
+            echo "📝 Reason: ${{ github.event.inputs.reason }}"
+          else
+            # Automatic trigger: use commit SHA
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            echo "🤖 Automatic deployment triggered"
+            echo "📦 Deploying commit: $COMMIT_SHA"
+            echo "📦 Using image tag: $IMAGE_TAG"
+          fi
           
           # Update backend deployment
           sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
             kubernetes/base/backend/deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
             kubernetes/base/backend/deployment.yaml
           
           # Update frontend deployment
           sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
             kubernetes/base/frontend/deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|sha-${SHORT_SHA}|g" \
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
             kubernetes/base/frontend/deployment.yaml
           
-          echo "✅ Image tags updated to: sha-${SHORT_SHA}"
+          echo "✅ Image tags updated to: ${IMAGE_TAG}"
 
       - name: Deploy Application
         run: |
@@ -118,15 +140,26 @@ jobs:
 
       - name: Print Deployment Summary
         run: |
-          COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
-          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            TRIGGER_TYPE="Manual"
+            TRIGGER_INFO="Reason: ${{ github.event.inputs.reason }}"
+          else
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            TRIGGER_TYPE="Automatic"
+            TRIGGER_INFO="Commit: $COMMIT_SHA"
+          fi
           
           echo "============================================="
           echo "🎉 DEPLOYMENT COMPLETED!"
           echo "============================================="
-          echo "Commit: $COMMIT_SHA"
-          echo "Backend Image: ${{ env.DOCKER_USERNAME }}/productx-backend:sha-${SHORT_SHA}"
-          echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/productx-frontend:sha-${SHORT_SHA}"
+          echo "Trigger: $TRIGGER_TYPE"
+          echo "$TRIGGER_INFO"
+          echo "Backend Image: ${{ env.DOCKER_USERNAME }}/productx-backend:${IMAGE_TAG}"
+          echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/productx-frontend:${IMAGE_TAG}"
           echo "EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
           echo "Region: ${{ env.AWS_REGION }}"
           echo "Namespace: productx"
