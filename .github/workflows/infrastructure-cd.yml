@@ -135,19 +135,33 @@ jobs:
             ENABLE_HTTPS="false"
           fi
           
+          set +e  # Don't exit on error
           terraform plan \
             -out=tfplan \
             -no-color \
             -detailed-exitcode \
             -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
             -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
-            -var="enable_https=${ENABLE_HTTPS}" \
-            || export exitcode=$?
+            -var="enable_https=${ENABLE_HTTPS}"
+          
+          exitcode=$?
+          set -e  # Re-enable exit on error
           
           echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
           
+          # Exit codes:
+          # 0 = No changes
+          # 1 = Error
+          # 2 = Success with changes
           if [ $exitcode -eq 1 ]; then
+            echo "❌ Terraform plan failed"
             exit 1
+          elif [ $exitcode -eq 2 ]; then
+            echo "✅ Terraform plan succeeded with changes"
+            exit 0
+          else
+            echo "✅ Terraform plan succeeded with no changes"
+            exit 0
           fi
       
       - name: Upload Terraform Plan
