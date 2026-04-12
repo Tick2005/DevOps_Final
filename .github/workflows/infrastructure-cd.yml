@@ -427,18 +427,6 @@ jobs:
           
           echo "✅ AWS Load Balancer Controller is ready"
       
-      - name: Apply Namespaceunt.annotations."eks\.amazonaws\.com/role-arn"=${ROLE_ARN} \
-            --set region=${{ env.AWS_REGION }} \
-            --set vpcId=$(jq -r '.vpc_id.value' outputs.json) \
-            --wait \
-            --timeout 5m
-          
-          echo "✅ AWS Load Balancer Controller installed"
-          
-          # Verify installation
-          kubectl get deployment -n kube-system aws-load-balancer-controller
-          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
-      
       - name: Apply Namespace
         run: kubectl apply -f kubernetes/namespace.yaml
       
