@@ -2,6 +2,7 @@
 # MAIN-CI.YML - Build & Release Docker Images for ProductX
 # =============================================================================
 # Trigger: Khi code được merge/push vào nhánh main (CHỈ KHI SỬA app/**)
+# Manual trigger note: update to force a fresh GitHub Actions run.
 # =============================================================================
 
 name: Build & Release Docker
