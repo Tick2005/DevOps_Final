@@ -10,6 +10,21 @@
 data "aws_caller_identity" "current" {}
 
 # =============================================================================
+# DATA SOURCE - Wait for EKS cluster to be ready
+# =============================================================================
+data "aws_eks_cluster" "cluster" {
+  name = module.eks.cluster_name
+  
+  depends_on = [module.eks]
+}
+
+data "aws_eks_cluster_auth" "cluster" {
+  name = module.eks.cluster_name
+  
+  depends_on = [module.eks]
+}
+
+# =============================================================================
 # IAM ROLE - Service Account for Load Balancer Controller
 # =============================================================================
 module "aws_load_balancer_controller_irsa" {
@@ -39,21 +54,9 @@ module "aws_load_balancer_controller_irsa" {
 # =============================================================================
 provider "helm" {
   kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args = [
-        "eks",
-        "get-token",
-        "--cluster-name",
-        module.eks.cluster_name,
-        "--region",
-        var.aws_region
-      ]
-    }
+    host                   = data.aws_eks_cluster.cluster.endpoint
+    cluster_ca_certificate = base64decode(data.aws_eks_cluster.cluster.certificate_authority[0].data)
+    token                  = data.aws_eks_cluster_auth.cluster.token
   }
 }
 
@@ -69,7 +72,7 @@ resource "helm_release" "aws_load_balancer_controller" {
 
   set {
     name  = "clusterName"
-    value = module.eks.cluster_name
+    value = data.aws_eks_cluster.cluster.name
   }
 
   set {
@@ -99,6 +102,9 @@ resource "helm_release" "aws_load_balancer_controller" {
 
   depends_on = [
     module.eks,
-    module.aws_load_balancer_controller_irsa
+    module.aws_load_balancer_controller_irsa,
+    data.aws_eks_cluster.cluster,
+    data.aws_eks_cluster_auth.cluster
   ]
 }
+
