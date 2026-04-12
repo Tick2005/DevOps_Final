@@ -368,9 +368,40 @@ jobs:
           kubectl version --client
           kubectl cluster-info
       
+      - name: Setup Terraform for Helm
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Install AWS Load Balancer Controller via Terraform Helm
+        working-directory: terraform-helm
+        run: |
+          echo "📦 Installing AWS Load Balancer Controller via Terraform Helm Provider..."
+          
+          # Get values from Terraform outputs
+          CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
+          VPC_ID=$(jq -r '.vpc_id.value' ../outputs.json)
+          ROLE_ARN=$(jq -r '.aws_load_balancer_controller_role_arn.value' ../outputs.json)
+          
+          echo "Cluster: $CLUSTER_NAME"
+          echo "VPC ID: $VPC_ID"
+          echo "Role ARN: $ROLE_ARN"
+          
+          # Initialize Terraform (cluster is ready now!)
+          terraform init
+          
+          # Apply Helm chart
+          terraform apply -auto-approve \
+            -var="cluster_name=$CLUSTER_NAME" \
+            -var="vpc_id=$VPC_ID" \
+            -var="lb_controller_role_arn=$ROLE_ARN" \
+            -var="aws_region=${{ env.AWS_REGION }}"
+          
+          echo "✅ AWS Load Balancer Controller installed via Terraform Helm"
+      
       - name: Verify AWS Load Balancer Controller
         run: |
-          echo "� Verifying AWS Load Balancer Controller installation..."
+          echo "🔍 Verifying AWS Load Balancer Controller installation..."
           
           # Check deployment
           kubectl get deployment -n kube-system aws-load-balancer-controller
