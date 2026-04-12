@@ -1,5 +1,5 @@
 # =============================================================================
-# FRONTEND DEPLOYMENT - React Application
+# FRONTEND DEPLOYMENT - React/Nginx Application for ProductX
 # =============================================================================
 apiVersion: apps/v1
 kind: Deployment
@@ -25,10 +25,11 @@ spec:
     spec:
       containers:
         - name: frontend
+          # Image sẽ được update bởi CI/CD với tag cụ thể
           image: DOCKER_USERNAME/productx-frontend:PLACEHOLDER_IMAGE_TAG
           imagePullPolicy: Always
           ports:
-            - containerPort: 5173
+            - containerPort: 80
           resources:
             requests:
               memory: "128Mi"
@@ -39,26 +40,12 @@ spec:
           readinessProbe:
             httpGet:
               path: /
-              port: 5173
+              port: 80
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /
-              port: 5173
+              port: 80
             initialDelaySeconds: 10
             periodSeconds: 15
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: frontend-svc
-  namespace: productx
-spec:
-  selector:
-    app: frontend
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 5173
-  type: ClusterIP

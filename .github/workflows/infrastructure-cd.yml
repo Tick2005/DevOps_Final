@@ -1,0 +1,469 @@
+# =============================================================================
+# INFRASTRUCTURE CI/CD - Terraform + Ansible for ProductX
+# =============================================================================
+# Trigger: Push to main (terraform/** or ansible/**) or manual dispatch
+# =============================================================================
+
+name: Infrastructure Provisioning & Configuration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - "kubernetes/**"
+      - ".github/workflows/infrastructure-cd.yml"
+  
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - destroy
+      
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm infrastructure deletion'
+        required: false
+        default: ""
+
+env:
+  AWS_REGION: ap-southeast-1
+  TF_VERSION: "1.7"
+
+jobs:
+  # ===========================================================================
+  # JOB 1: SECURITY SCANNING
+  # ===========================================================================
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action != 'destroy'
+    
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner in IaC mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '0'
+      
+      - name: Upload Trivy Results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-iac
+      
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified
+
+  # ===========================================================================
+  # JOB 2: TERRAFORM PLAN
+  # ===========================================================================
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: security-scan
+    if: github.event.inputs.action != 'destroy'
+    
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            echo "Run ./bootstrap-backend.sh to create backend and get bucket name"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+      
+      - name: Terraform Plan
+        id: plan
+        working-directory: terraform
+        timeout-minutes: 20
+        run: |
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          terraform plan \
+            -out=tfplan \
+            -no-color \
+            -detailed-exitcode \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${ENABLE_HTTPS}" \
+            || export exitcode=$?
+          
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+          
+          if [ $exitcode -eq 1 ]; then
+            exit 1
+          fi
+      
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 5
+
+  # ===========================================================================
+  # JOB 3: TERRAFORM APPLY
+  # ===========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: terraform-plan
+    if: github.event.inputs.action != 'destroy'
+    
+    environment:
+      name: production-infrastructure
+      url: https://productx.online
+    
+    outputs:
+      db_public_ip: ${{ steps.outputs.outputs.db_public_ip }}
+      db_private_ip: ${{ steps.outputs.outputs.db_private_ip }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/
+      
+      - name: Terraform Apply
+        working-directory: terraform
+        timeout-minutes: 45
+        run: terraform apply -auto-approve tfplan
+      
+      - name: Export Terraform Outputs
+        id: outputs
+        working-directory: terraform
+        run: |
+          echo "db_public_ip=$(terraform output -raw db_public_ip)" >> $GITHUB_OUTPUT
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> $GITHUB_OUTPUT
+          terraform output -json > outputs.json
+      
+      - name: Upload Terraform Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: terraform/outputs.json
+          retention-days: 5
+
+  # ===========================================================================
+  # JOB 4: ANSIBLE CONFIGURATION
+  # ===========================================================================
+  ansible-config:
+    name: Ansible Configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: terraform-apply
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ needs.terraform-apply.outputs.db_public_ip }} >> ~/.ssh/known_hosts
+      
+      - name: Generate Ansible Inventory
+        working-directory: ansible/inventory
+        run: |
+          cat > hosts.ini << EOF
+          # Auto-generated by GitHub Actions at $(date)
+          
+          [database]
+          db-server ansible_host=${{ needs.terraform-apply.outputs.db_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [nfs_server]
+          db-server ansible_host=${{ needs.terraform-apply.outputs.db_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [all:vars]
+          ansible_ssh_private_key_file=~/.ssh/id_rsa
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          EOF
+          
+          cat hosts.ini
+      
+      - name: Wait for SSH
+        run: |
+          echo "Waiting for SSH on DB/NFS server..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -i ~/.ssh/id_rsa ubuntu@${{ needs.terraform-apply.outputs.db_public_ip }} "echo 'SSH Ready'"; then
+              echo "✅ SSH ready!"
+              break
+            fi
+            echo "⏳ Waiting for SSH... ($i/30)"
+            sleep 10
+          done
+      
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+      
+      - name: Test Ansible Connectivity
+        working-directory: ansible
+        run: ansible all -i inventory/hosts.ini -m ping
+      
+      - name: Run Ansible Playbook
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory/hosts.ini playbooks/site.yml \
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -v
+
+  # ===========================================================================
+  # JOB 5: KUBERNETES BASE SETUP
+  # ===========================================================================
+  kubernetes-setup:
+    name: Kubernetes Base Setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [terraform-apply, ansible-config]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+          path: ./
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+      
+      - name: Apply Namespace
+        run: kubectl apply -f kubernetes/namespace.yaml
+      
+      - name: Apply ConfigMap
+        run: |
+          DB_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          NFS_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          
+          cat kubernetes/configmap.yaml | \
+            sed "s|PLACEHOLDER_DB_HOST|${DB_IP}|g" | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply Secrets
+        run: |
+          cat kubernetes/secrets.yaml | \
+            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply NFS PersistentVolume
+        run: |
+          NFS_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          
+          cat kubernetes/nfs-pv.yaml | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Wait for PVC to be Bound
+        run: |
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound \
+            pvc/nfs-uploads-pvc -n productx --timeout=60s || true
+      
+      - name: Apply Services
+        run: |
+          kubectl apply -f kubernetes/base/backend/service.yaml
+          kubectl apply -f kubernetes/base/frontend/service.yaml
+      
+      - name: Apply HPA
+        run: |
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+      
+      - name: Apply Ingress
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ HTTPS enabled"
+            cat kubernetes/ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ HTTP-only mode"
+            cat kubernetes/ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              kubectl apply -f -
+          fi
+      
+      - name: Verify Resources
+        run: |
+          echo "📊 Kubernetes Resources Status:"
+          kubectl get all -n productx
+          kubectl get pv,pvc -n productx
+          kubectl get ingress -n productx
+
+  # ===========================================================================
+  # JOB 6: TERRAFORM DESTROY
+  # ===========================================================================
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'destroy' &&
+      github.event.inputs.confirm_destroy == 'DESTROY'
+    
+    environment:
+      name: production-infrastructure
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} || true
+      
+      - name: Pre-Destroy Warning
+        run: |
+          echo "⚠️⚠️⚠️ DESTROYING INFRASTRUCTURE ⚠️⚠️⚠️"
+          echo "Waiting 30 seconds for final cancellation..."
+          sleep 30
+      
+      - name: Cleanup Kubernetes Resources
+        run: |
+          if kubectl cluster-info &>/dev/null; then
+            kubectl delete ingress --all -n productx 2>/dev/null || true
+            kubectl delete svc --all -n productx 2>/dev/null || true
+            sleep 60
+          fi
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend
+        working-directory: terraform
+        run: |
+          sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: |
+          terraform destroy -auto-approve \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=false"
+      
+      - name: Destroy Complete
+        run: |
+          echo "============================================="
+          echo "✅ INFRASTRUCTURE DESTROYED"
+          echo "============================================="
