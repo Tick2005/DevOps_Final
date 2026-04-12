@@ -1,5 +1,5 @@
 # =============================================================================
-# NFS-PV.YAML - NFS PersistentVolume for file uploads
+# NFS-PV.YAML - NFS PersistentVolume for ProductX
 # =============================================================================
 apiVersion: v1
 kind: PersistentVolume
@@ -14,7 +14,7 @@ spec:
     - ReadWriteMany
   persistentVolumeReclaimPolicy: Retain
   nfs:
-    server: PLACEHOLDER_NFS_SERVER
+    server: PLACEHOLDER_NFS_SERVER  # Sẽ được thay thế bởi CI/CD
     path: /srv/nfs/uploads
   mountOptions:
     - nfsvers=4.1

@@ -1,21 +1,20 @@
 # =============================================================================
-# HOSTS.INI.EXAMPLE - Ansible Inventory
+# ANSIBLE INVENTORY - ProductX Infrastructure
 # =============================================================================
-# Copy file này thành hosts.ini và điền IP addresses từ Terraform output
+# File này là template, file thực sẽ được generate bởi GitHub Actions
+# Hoặc tạo thủ công khi chạy local
 # =============================================================================
 
 [database]
-# Database + NFS Server (cùng 1 EC2 instance)
-db-server ansible_host=REPLACE_WITH_DATABASE_PUBLIC_IP ansible_user=ubuntu
+db-server ansible_host=<DB_PUBLIC_IP> ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
 
 [nfs_server]
-# NFS Server (cùng server với database)
-db-server ansible_host=REPLACE_WITH_DATABASE_PUBLIC_IP ansible_user=ubuntu
-
-[sonarqube]
-# SonarQube Server (EC2 instance riêng)
-sonar-server ansible_host=REPLACE_WITH_SONARQUBE_PUBLIC_IP ansible_user=ubuntu
+db-server ansible_host=<DB_PUBLIC_IP> ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
 
 [all:vars]
-ansible_python_interpreter=/usr/bin/python3
-ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_ssh_private_key_file=~/.ssh/id_rsa
+ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+
+# Private IPs for K8s configuration
+# DB_PRIVATE_IP=<DB_PRIVATE_IP>
+# NFS_SERVER_IP=<DB_PRIVATE_IP>

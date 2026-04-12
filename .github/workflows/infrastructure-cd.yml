@@ -1,0 +1,757 @@
+# =============================================================================
+# INFRASTRUCTURE CI/CD - Terraform + Ansible for ProductX
+# =============================================================================
+# Trigger: Push to main (terraform/** or ansible/**) or manual dispatch
+# =============================================================================
+
+name: Infrastructure Provisioning & Configuration
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "terraform/**"
+      - "ansible/**"
+      - "kubernetes/**"
+      - ".github/workflows/infrastructure-cd.yml"
+  
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Action to perform"
+        required: true
+        default: "apply"
+        type: choice
+        options:
+          - apply
+          - destroy
+      
+      confirm_destroy:
+        description: 'Type "DESTROY" to confirm infrastructure deletion'
+        required: false
+        default: ""
+
+env:
+  AWS_REGION: ap-southeast-1
+  TF_VERSION: "1.7"
+
+jobs:
+  # ===========================================================================
+  # JOB 1: SECURITY SCANNING
+  # ===========================================================================
+  security-scan:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    if: github.event.inputs.action != 'destroy'
+    
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scanner in IaC mode
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'config'
+          scan-ref: 'terraform'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          exit-code: '0'
+      
+      - name: Upload Trivy Results
+        if: always()
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-iac
+      
+      - name: Run TruffleHog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          extra_args: --only-verified
+
+  # ===========================================================================
+  # JOB 2: TERRAFORM PLAN
+  # ===========================================================================
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: security-scan
+    if: github.event.inputs.action != 'destroy'
+    
+    outputs:
+      plan_exitcode: ${{ steps.plan.outputs.exitcode }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            echo "Run ./bootstrap-backend.sh to create backend and get bucket name"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Cleanup Legacy Helm State
+        working-directory: terraform
+        run: |
+          echo "🧹 Checking for legacy Helm resources in state..."
+          
+          # Remove helm_release if exists (from previous deployments)
+          if terraform state list 2>/dev/null | grep -q "helm_release"; then
+            echo "  Found helm_release in state, removing..."
+            terraform state rm helm_release.aws_load_balancer_controller 2>/dev/null || true
+            echo "  ✅ Removed from state"
+          else
+            echo "  ✅ No helm_release in state"
+          fi
+          
+          echo "✅ State cleanup completed"
+      
+      - name: Terraform Validate
+        working-directory: terraform
+        run: terraform validate
+      
+      - name: Terraform Plan
+        id: plan
+        working-directory: terraform
+        timeout-minutes: 20
+        run: |
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          set +e  # Don't exit on error
+          terraform plan \
+            -out=tfplan \
+            -no-color \
+            -detailed-exitcode \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${ENABLE_HTTPS}"
+          
+          exitcode=$?
+          set -e  # Re-enable exit on error
+          
+          echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
+          
+          # Exit codes:
+          # 0 = No changes
+          # 1 = Error
+          # 2 = Success with changes
+          if [ $exitcode -eq 1 ]; then
+            echo "❌ Terraform plan failed"
+            exit 1
+          elif [ $exitcode -eq 2 ]; then
+            echo "✅ Terraform plan succeeded with changes"
+            exit 0
+          else
+            echo "✅ Terraform plan succeeded with no changes"
+            exit 0
+          fi
+      
+      - name: Upload Terraform Plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/tfplan
+          retention-days: 5
+
+  # ===========================================================================
+  # JOB 3: TERRAFORM APPLY
+  # ===========================================================================
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: terraform-plan
+    if: github.event.inputs.action != 'destroy'
+    
+    environment:
+      name: production-infrastructure
+      url: https://productx.online
+    
+    outputs:
+      db_public_ip: ${{ steps.outputs.outputs.db_public_ip }}
+      db_private_ip: ${{ steps.outputs.outputs.db_private_ip }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Cleanup Legacy Helm State
+        working-directory: terraform
+        run: |
+          echo "🧹 Checking for legacy Helm resources in state..."
+          if terraform state list 2>/dev/null | grep -q "helm_release"; then
+            echo "  Removing helm_release from state..."
+            terraform state rm helm_release.aws_load_balancer_controller 2>/dev/null || true
+            echo "  ✅ Removed"
+          fi
+      
+      - name: Download Terraform Plan
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: terraform/
+      
+      - name: Terraform Apply
+        working-directory: terraform
+        timeout-minutes: 45
+        run: terraform apply -auto-approve tfplan
+      
+      - name: Wait for EKS Cluster Ready
+        run: |
+          echo "⏳ Waiting for EKS cluster to be fully ready..."
+          
+          # Update kubeconfig
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          
+          # Wait for cluster to be accessible
+          for i in {1..30}; do
+            if kubectl cluster-info &>/dev/null; then
+              echo "✅ EKS cluster is ready!"
+              break
+            fi
+            echo "  Waiting for cluster... ($i/30)"
+            sleep 10
+          done
+          
+          # Verify nodes are ready
+          kubectl get nodes
+          kubectl get pods -n kube-system
+      
+      - name: Install AWS Load Balancer Controller
+        working-directory: terraform
+        run: |
+          echo "📦 Installing AWS Load Balancer Controller via Terraform..."
+          
+          # Now cluster is ready, we can apply Helm chart
+          terraform apply -auto-approve \
+            -target=null_resource.install_aws_load_balancer_controller \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${{ secrets.DOMAIN_NAME != '' && 'true' || 'false' }}"
+          
+          echo "✅ AWS Load Balancer Controller installed"
+          
+          # Verify installation
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+      
+      - name: Export Terraform Outputs
+        id: outputs
+        working-directory: terraform
+        run: |
+          echo "db_public_ip=$(terraform output -raw db_public_ip)" >> $GITHUB_OUTPUT
+          echo "db_private_ip=$(terraform output -raw db_private_ip)" >> $GITHUB_OUTPUT
+          terraform output -json > outputs.json
+      
+      - name: Upload Terraform Outputs
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-outputs
+          path: terraform/outputs.json
+          retention-days: 5
+
+  # ===========================================================================
+  # JOB 4: ANSIBLE CONFIGURATION
+  # ===========================================================================
+  ansible-config:
+    name: Ansible Configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: terraform-apply
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup SSH Key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ needs.terraform-apply.outputs.db_public_ip }} >> ~/.ssh/known_hosts
+      
+      - name: Generate Ansible Inventory
+        working-directory: ansible/inventory
+        run: |
+          cat > hosts.ini << EOF
+          # Auto-generated by GitHub Actions at $(date)
+          
+          [database]
+          db-server ansible_host=${{ needs.terraform-apply.outputs.db_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [nfs_server]
+          db-server ansible_host=${{ needs.terraform-apply.outputs.db_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+          
+          [all:vars]
+          ansible_ssh_private_key_file=~/.ssh/id_rsa
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          EOF
+          
+          cat hosts.ini
+      
+      - name: Wait for SSH
+        run: |
+          echo "Waiting for SSH on DB/NFS server..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -i ~/.ssh/id_rsa ubuntu@${{ needs.terraform-apply.outputs.db_public_ip }} "echo 'SSH Ready'"; then
+              echo "✅ SSH ready!"
+              break
+            fi
+            echo "⏳ Waiting for SSH... ($i/30)"
+            sleep 10
+          done
+      
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+      
+      - name: Test Ansible Connectivity
+        working-directory: ansible
+        run: ansible all -i inventory/hosts.ini -m ping
+      
+      - name: Run Ansible Playbook
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory/hosts.ini playbooks/site.yml \
+            -e "db_password=${{ secrets.DB_PASSWORD }}" \
+            -v
+
+  # ===========================================================================
+  # JOB 5: KUBERNETES BASE SETUP
+  # ===========================================================================
+  kubernetes-setup:
+    name: Kubernetes Base Setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [terraform-apply, ansible-config]
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Download Terraform Outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-outputs
+          path: ./
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+      
+      - name: Verify AWS Load Balancer Controller
+        run: |
+          echo "� Verifying AWS Load Balancer Controller installation..."
+          
+          # Check deployment
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          
+          # Check pods
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=aws-load-balancer-controller \
+            -n kube-system \
+            --timeout=300s
+          
+          echo "✅ AWS Load Balancer Controller is ready"
+      
+      - name: Apply Namespaceunt.annotations."eks\.amazonaws\.com/role-arn"=${ROLE_ARN} \
+            --set region=${{ env.AWS_REGION }} \
+            --set vpcId=$(jq -r '.vpc_id.value' outputs.json) \
+            --wait \
+            --timeout 5m
+          
+          echo "✅ AWS Load Balancer Controller installed"
+          
+          # Verify installation
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+      
+      - name: Apply Namespace
+        run: kubectl apply -f kubernetes/namespace.yaml
+      
+      - name: Apply ConfigMap
+        run: |
+          DB_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          NFS_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          
+          cat kubernetes/configmap.yaml | \
+            sed "s|PLACEHOLDER_DB_HOST|${DB_IP}|g" | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply Secrets
+        run: |
+          cat kubernetes/secrets.yaml | \
+            sed "s|PLACEHOLDER_DB_PASSWORD|${{ secrets.DB_PASSWORD }}|g" | \
+            kubectl apply -f -
+      
+      - name: Apply NFS PersistentVolume
+        run: |
+          NFS_IP=$(jq -r '.db_private_ip.value' outputs.json)
+          
+          cat kubernetes/nfs-pv.yaml | \
+            sed "s|PLACEHOLDER_NFS_SERVER|${NFS_IP}|g" | \
+            kubectl apply -f -
+      
+      - name: Wait for PVC to be Bound
+        run: |
+          kubectl wait --for=jsonpath='{.status.phase}'=Bound \
+            pvc/nfs-uploads-pvc -n productx --timeout=60s || true
+      
+      - name: Apply Services
+        run: |
+          kubectl apply -f kubernetes/base/backend/service.yaml
+          kubectl apply -f kubernetes/base/frontend/service.yaml
+      
+      - name: Apply HPA
+        run: |
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+      
+      - name: Apply Ingress
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ HTTPS enabled"
+            cat kubernetes/ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ HTTP-only mode"
+            cat kubernetes/ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              kubectl apply -f -
+          fi
+      
+      - name: Verify Resources
+        run: |
+          echo "📊 Kubernetes Resources Status:"
+          kubectl get all -n productx
+          kubectl get pv,pvc -n productx
+          kubectl get ingress -n productx
+
+  # ===========================================================================
+  # JOB 6: TERRAFORM DESTROY (with strict safeguards)
+  # ===========================================================================
+  terraform-destroy:
+    name: Terraform Destroy
+    runs-on: ubuntu-latest
+    if: |
+      github.event.inputs.action == 'destroy' &&
+      github.event.inputs.confirm_destroy == 'DESTROY'
+    
+    environment:
+      name: production-infrastructure
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          aws eks update-kubeconfig \
+            --name ${{ secrets.EKS_CLUSTER_NAME }} \
+            --region ${{ env.AWS_REGION }} || true
+      
+      - name: Pre-Destroy Warning
+        run: |
+          echo "⚠️⚠️⚠️ DESTROYING INFRASTRUCTURE ⚠️⚠️⚠️"
+          echo ""
+          echo "This will DELETE:"
+          echo "  - EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "  - EC2 Instances (DB + NFS)"
+          echo "  - VPC and all networking"
+          echo "  - All data and configurations"
+          echo ""
+          echo "Waiting 30 seconds for final cancellation..."
+          sleep 30
+      
+      - name: Cleanup Kubernetes Resources
+        run: |
+          echo "🧹 Step 1: Deleting Kubernetes resources..."
+          
+          if kubectl cluster-info &>/dev/null; then
+            echo "  Deleting Ingress (triggers ALB deletion)..."
+            kubectl delete ingress --all -n productx 2>/dev/null || true
+            
+            echo "  Deleting LoadBalancer services..."
+            kubectl delete svc --all -n productx 2>/dev/null || true
+            
+            echo "  Deleting AWS Load Balancer Controller..."
+            helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
+            
+            echo "✅ Kubernetes resources deleted"
+            echo "⏳ Waiting 60 seconds for ALB deletion..."
+            sleep 60
+          else
+            echo "⚠️ kubectl not configured, skipping Kubernetes cleanup"
+          fi
+      
+      - name: Force Delete ALBs
+        run: |
+          echo "🧹 Step 2: Force deleting ALBs..."
+          
+          ALB_ARNS=$(aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} \
+            --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-productx')].LoadBalancerArn" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$ALB_ARNS" ]; then
+            echo "✅ No ALBs found"
+          else
+            for arn in $ALB_ARNS; do
+              echo "  Deleting: $arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region ${{ env.AWS_REGION }} 2>/dev/null || true
+            done
+            echo "✅ ALB deletion triggered"
+            echo "⏳ Waiting 120 seconds for ALB cleanup..."
+            sleep 120
+          fi
+      
+      - name: Cleanup Security Groups
+        run: |
+          echo "🧹 Step 3: Cleaning up Kubernetes Security Groups..."
+          
+          VPC_ID=$(aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Name,Values=productx-vpc" \
+            --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+            echo "⚠️ VPC not found"
+          else
+            echo "Found VPC: $VPC_ID"
+            
+            # Get all non-default SGs
+            SG_IDS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "SecurityGroups[?GroupName!='default'].GroupId" \
+              --output text 2>/dev/null || echo "")
+            
+            if [ -z "$SG_IDS" ]; then
+              echo "✅ No Security Groups to clean"
+            else
+              echo "  Removing all rules to break dependencies..."
+              for SG_ID in $SG_IDS; do
+                # Revoke all ingress rules
+                INGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissions" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$INGRESS" != "[]" ] && [ "$INGRESS" != "null" ]; then
+                  echo "$INGRESS" > /tmp/ing-$SG_ID.json
+                  aws ec2 revoke-security-group-ingress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/ing-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/ing-$SG_ID.json
+                fi
+                
+                # Revoke all egress rules
+                EGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissionsEgress" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$EGRESS" != "[]" ] && [ "$EGRESS" != "null" ]; then
+                  echo "$EGRESS" > /tmp/eg-$SG_ID.json
+                  aws ec2 revoke-security-group-egress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/eg-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/eg-$SG_ID.json
+                fi
+              done
+              
+              sleep 10
+              
+              echo "  Deleting Kubernetes Security Groups..."
+              for SG_ID in $SG_IDS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                # Check if it's a Kubernetes SG
+                IS_K8S_SG=false
+                if [[ "$SG_NAME" == k8s-traffic-* ]]; then
+                  IS_K8S_SG=true
+                fi
+                
+                # Check for ALB tag
+                HAS_ALB_TAG=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].Tags[?Key=='elbv2.k8s.aws/cluster'].Value" \
+                  --output text 2>/dev/null || echo "")
+                if [ ! -z "$HAS_ALB_TAG" ]; then
+                  IS_K8S_SG=true
+                fi
+                
+                if [ "$IS_K8S_SG" = true ]; then
+                  echo "    Deleting Kubernetes SG: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Cannot delete (will retry)"
+                  }
+                else
+                  echo "    Skipping Terraform SG: $SG_ID ($SG_NAME)"
+                fi
+              done
+              
+              # Final retry for stubborn SGs
+              echo "  Final retry - deleting remaining non-default SGs..."
+              sleep 15
+              
+              REMAINING_SGS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+                --filters "Name=vpc-id,Values=$VPC_ID" \
+                --query "SecurityGroups[?GroupName!='default'].GroupId" \
+                --output text 2>/dev/null || echo "")
+              
+              for SG_ID in $REMAINING_SGS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                if [ "$SG_NAME" != "default" ]; then
+                  echo "    Attempting to delete: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Still has dependencies (Terraform will handle)"
+                  }
+                fi
+              done
+              
+              echo "✅ Security Groups cleanup completed"
+            fi
+          fi
+      
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Configure Backend with Secret
+        working-directory: terraform
+        run: |
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            exit 1
+          fi
+      
+      - name: Terraform Init
+        working-directory: terraform
+        run: terraform init
+      
+      - name: Terraform Destroy
+        working-directory: terraform
+        run: |
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          terraform destroy -auto-approve -no-color \
+            -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
+            -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
+            -var="enable_https=${ENABLE_HTTPS}"
+      
+      - name: Destroy Complete
+        run: |
+          echo "============================================="
+          echo "✅ INFRASTRUCTURE DESTROYED"
+          echo "============================================="
+          echo ""
+          echo "Deleted resources:"
+          echo "  ✅ EKS Cluster"
+          echo "  ✅ EC2 Instances"
+          echo "  ✅ VPC and Networking"
+          echo "  ✅ Security Groups"
+          echo "  ✅ Load Balancers"
+          echo ""
+          echo "⚠️ Manual cleanup may be needed for:"
+          echo "  - S3 Terraform state bucket"
+          echo "  - DynamoDB state lock table"
+          echo "  - ACM certificates"
+          echo "  - CloudWatch log groups"
+          echo ""
+          echo "Run cleanup scripts if needed:"
+          echo "  ./cleanup-failed-resources.sh"
+          echo "  ./full-cleanup.sh"
+          echo "============================================="
