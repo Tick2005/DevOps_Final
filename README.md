@@ -1,203 +1,440 @@
-# DevOps Final - Product Management System
+# DevOps Final - ProductX Management System
 
 Hệ thống quản lý sản phẩm với kiến trúc microservices triển khai trên Amazon EKS.
 
-## 🏗️ Kiến trúc
+## 📚 Tài liệu hướng dẫn
 
-- **Frontend**: React + Vite
-- **Backend**: Spring Boot + PostgreSQL
-- **Infrastructure**: Amazon EKS (Kubernetes)
+### 🎯 Bắt đầu nhanh
+1. **[GITHUB_SECRETS_GUIDE.md](./GITHUB_SECRETS_GUIDE.md)** - Hướng dẫn chi tiết cách tìm và thêm GitHub Secrets
+2. **[PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md)** - Hướng dẫn triển khai production từng bước
+3. **[FIX_IAM_PERMISSIONS.md](./FIX_IAM_PERMISSIONS.md)** - Fix lỗi IAM permissions và instance types
+4. **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Kiến trúc hệ thống chi tiết
+
+### 📖 Nội dung chính
+- [Tổng quan](#tổng-quan)
+- [Yêu cầu](#yêu-cầu)
+- [Cài đặt nhanh](#cài-đặt-nhanh)
+- [Cấu trúc dự án](#cấu-trúc-dự-án)
+- [CI/CD Pipeline](#cicd-pipeline)
+- [Monitoring](#monitoring)
+- [Troubleshooting](#troubleshooting)
+
+---
+
+## Tổng quan
+
+ProductX là hệ thống quản lý sản phẩm enterprise-grade với:
+
+### 🏗️ Kiến trúc
+- **Frontend**: React 18 + Vite 5
+- **Backend**: Spring Boot 3.x + Java 21
+- **Database**: PostgreSQL 16
+- **Infrastructure**: Amazon EKS (Kubernetes 1.28+)
 - **CI/CD**: GitHub Actions
-- **Code Quality**: SonarQube (self-hosted)
 - **Storage**: NFS Persistent Volume
+- **Monitoring**: Prometheus + Grafana
 
-## 📋 Yêu cầu
+### ✨ Tính năng
+- ✅ Auto-scaling (HPA) cho frontend và backend
+- ✅ Rolling updates với zero-downtime
+- ✅ Self-healing containers
+- ✅ HTTPS với ACM Certificate
+- ✅ Infrastructure as Code (Terraform)
+- ✅ Configuration Management (Ansible)
+- ✅ Container security scanning (Trivy)
+- ✅ Secrets scanning (TruffleHog)
 
-- AWS Account với IAM user có quyền tạo EKS, EC2, VPC
-- AWS CLI đã cài đặt và cấu hình
-- Terraform >= 1.7
-- Ansible >= 2.9
-- kubectl
-- SSH key pair trên AWS
-- Docker Hub account
-- SonarQube server (sẽ được cài đặt tự động bằng Ansible)
+---
 
-## 🚀 Cài đặt nhanh
+## Yêu cầu
 
-### 1. Clone repository
+### Tài khoản cần có
+- ✅ AWS Account (Free Tier hoặc có credit)
+- ✅ GitHub Account
+- ✅ Docker Hub Account
+- ✅ Domain (Optional - cho HTTPS)
+
+### Công cụ cần cài
+- AWS CLI 2.x
+- Git
+- (Optional) Terraform 1.7+
+- (Optional) kubectl
+
+**Lưu ý:** Bootstrap script sẽ tự động cài Terraform nếu chưa có.
+
+---
+
+## Cài đặt nhanh
+
+### Bước 1: Clone repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/your-username/DevOps_Final.git
 cd DevOps_Final
 ```
 
-### 2. Cấu hình môi trường
+### Bước 2: Cấu hình AWS
 
 ```bash
-cp .env.example .env
-nano .env
+# Cấu hình AWS CLI
+aws configure
+
+# Tạo SSH key pair trên AWS (Region: ap-southeast-1)
+# EC2 Console → Key Pairs → Create key pair
+# Name: productx-key
+# Download file productx-key.pem vào thư mục dự án
+chmod 400 productx-key.pem
 ```
 
-Điền các thông tin:
-```bash
-AWS_KEY_NAME=your-key-name-here
-DB_PASSWORD=SecurePassword123!
-SONAR_ORGANIZATION=your-org
-SONAR_PROJECT_KEY=your-project-key
-SONAR_TOKEN=your-token
-DOCKER_USERNAME=your-dockerhub-username
-```
-
-### 3. Đặt file SSH key
+### Bước 3: Chạy Bootstrap Script
 
 ```bash
-# Đảm bảo file .pem nằm trong thư mục gốc
-chmod 400 your-key-name.pem
+# Tạo S3 bucket và DynamoDB table cho Terraform state
+chmod +x bootstrap-backend.sh
+./bootstrap-backend.sh
+
+# Lưu bucket name từ output (cần cho GitHub Secret)
 ```
 
-### 4. Chạy setup tự động
+### Bước 4: Cấu hình GitHub Secrets
 
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-Script sẽ tự động:
-- Tạo EKS cluster với managed node groups
-- Tạo EC2 instance cho PostgreSQL và NFS
-- Cấu hình servers qua Ansible
-- Hiển thị thông tin để cấu hình GitHub Actions
-
-### 5. Cấu hình GitHub Actions Secrets
+**Xem hướng dẫn chi tiết:** [GITHUB_SECRETS_GUIDE.md](./GITHUB_SECRETS_GUIDE.md)
 
 Vào GitHub repo → Settings → Secrets and variables → Actions
 
-Thêm các secrets:
-```
-AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY
-AWS_REGION
-EKS_CLUSTER_NAME
-DATA_SERVER_IP
-DB_PASSWORD
-DOCKER_USERNAME
-DOCKER_PASSWORD
-SONAR_TOKEN
-SONAR_ORGANIZATION
-SONAR_PROJECT_KEY
-```
+Thêm các secrets sau:
 
-### 6. Deploy ứng dụng
+| Secret Name | Mô tả | Xem hướng dẫn |
+|------------|-------|---------------|
+| `AWS_ACCESS_KEY_ID` | AWS Access Key | [Link](./GITHUB_SECRETS_GUIDE.md#1-aws_access_key_id--aws_secret_access_key) |
+| `AWS_SECRET_ACCESS_KEY` | AWS Secret Key | [Link](./GITHUB_SECRETS_GUIDE.md#1-aws_access_key_id--aws_secret_access_key) |
+| `AWS_KEY_NAME` | Tên SSH key pair | [Link](./GITHUB_SECRETS_GUIDE.md#2-aws_key_name) |
+| `EC2_SSH_PRIVATE_KEY` | Nội dung file .pem | [Link](./GITHUB_SECRETS_GUIDE.md#3-ec2_ssh_private_key) |
+| `EKS_CLUSTER_NAME` | Tên EKS cluster | [Link](./GITHUB_SECRETS_GUIDE.md#4-eks_cluster_name) |
+| `DB_PASSWORD` | Password PostgreSQL | [Link](./GITHUB_SECRETS_GUIDE.md#5-db_password) |
+| `DOCKER_USERNAME` | Docker Hub username | [Link](./GITHUB_SECRETS_GUIDE.md#6-docker_username--docker_password) |
+| `DOCKER_PASSWORD` | Docker Hub token | [Link](./GITHUB_SECRETS_GUIDE.md#6-docker_username--docker_password) |
+| `TF_BACKEND_BUCKET` | S3 bucket name | [Link](./GITHUB_SECRETS_GUIDE.md#7-tf_backend_bucket) |
+| `DOMAIN_NAME` (Optional) | Domain của bạn | [Link](./GITHUB_SECRETS_GUIDE.md#8-domain_name-optional) |
+
+### Bước 5: Push code và Deploy
 
 ```bash
+# Khởi tạo Git repository
+git init
+git remote add origin https://github.com/your-username/DevOps_Final.git
+
+# Commit và push
 git add .
-git commit -m "Initial deployment"
-git push origin main
+git commit -m "Initial commit: ProductX Management System"
+git branch -M main
+git push -u origin main
 ```
 
-## 📖 Hướng dẫn chi tiết
+**⚠️ Push code sẽ tự động trigger CI/CD pipeline!**
 
-Xem file [HUONG_DAN_CHI_TIET.md](./HUONG_DAN_CHI_TIET.md) để biết:
-- Cách tạo VPC, Subnets, Availability Zones
-- Cách cấu hình Security Groups
-- Cách tạo IAM Roles và Policies
-- Cách cài đặt và cấu hình từng thành phần
-- Xử lý sự cố chi tiết
+### Bước 6: Theo dõi Deployment
 
-## 🔧 Chạy local với Docker Compose
-
-```bash
-docker compose up -d --build
+```
+1. Vào GitHub → Actions
+2. Xem workflow "Infrastructure Provisioning" (30-40 phút)
+3. Approve manual deployment khi được yêu cầu
+4. Đợi "Build & Release Docker" (5-10 phút)
+5. Đợi "Continuous Deployment" (3-5 phút)
 ```
 
-Truy cập:
-- App: http://localhost:5173
-- API: http://localhost:8080/api/products
-
-## 📊 Giám sát
+### Bước 7: Truy cập ứng dụng
 
 ```bash
-# Xem pods
-kubectl get pods -n productx
-
-# Xem logs
-kubectl logs -f deployment/backend -n productx
-
-# Xem HPA
-kubectl get hpa -n productx
-
-# Lấy URL ứng dụng
+# Lấy ALB URL
 kubectl get ingress -n productx
+
+# Truy cập qua browser
+http://<alb-url>
 ```
 
-## 🧪 Testing
+**Nếu có domain:** Xem [PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md#cấu-hình-domain-hostinger)
 
-### Test Horizontal Pod Autoscaling
+---
 
-```bash
-kubectl run -i --tty load-generator --rm --image=busybox --restart=Never -- /bin/sh
-# Trong pod:
-while true; do wget -q -O- http://backend-svc.productx.svc.cluster.local:8080/api/products; done
-
-# Terminal khác:
-kubectl get hpa -n productx -w
-```
-
-## 🗑️ Cleanup
-
-```bash
-chmod +x cleanup.sh
-./cleanup.sh
-```
-
-## 📝 Cấu trúc dự án
+## Cấu trúc dự án
 
 ```
 DevOps_Final/
 ├── app/
-│   ├── backend/common/      # Spring Boot service
-│   └── frontend/            # React + Vite UI
-├── terraform/               # Infrastructure as Code
-│   ├── main.tf
+│   ├── backend/common/          # Spring Boot service
+│   │   ├── src/
+│   │   ├── Dockerfile
+│   │   └── pom.xml
+│   └── frontend/                # React + Vite UI
+│       ├── src/
+│       ├── Dockerfile
+│       └── package.json
+├── terraform/                   # Infrastructure as Code
+│   ├── main.tf                  # VPC, EKS, EC2
 │   ├── variables.tf
 │   ├── outputs.tf
-│   └── eks-addons.tf
-├── ansible/                 # Configuration Management
+│   └── backend.tf               # S3 remote state
+├── ansible/                     # Configuration Management
 │   ├── playbooks/
-│   │   ├── site.yml
-│   │   ├── database.yml
-│   │   └── nfs-server.yml
-│   └── inventory/
-├── kubernetes/              # K8s Manifests
+│   │   ├── site.yml            # Main playbook
+│   │   ├── database.yml        # PostgreSQL setup
+│   │   └── nfs-server.yml      # NFS setup
+│   ├── inventory/
+│   │   └── hosts.ini.example
+│   └── ansible.cfg
+├── kubernetes/                  # K8s Manifests
 │   ├── namespace.yaml
 │   ├── configmap.yaml
 │   ├── secrets.yaml
-│   ├── backend-deployment.yaml
-│   ├── frontend-deployment.yaml
-│   ├── hpa.yaml
+│   ├── nfs-pv.yaml
 │   ├── ingress.yaml
-│   └── nfs-pv.yaml
-├── .github/workflows/       # CI/CD Pipelines
-│   ├── main-ci.yml
-│   └── deploy-cd.yml
-├── docker-compose.yml
-├── setup.sh
-├── cleanup.sh
-├── .env.example
-├── HUONG_DAN_CHI_TIET.md
-└── README.md
+│   └── base/
+│       ├── backend/
+│       │   ├── deployment.yaml
+│       │   ├── service.yaml
+│       │   └── hpa.yaml
+│       └── frontend/
+│           ├── deployment.yaml
+│           ├── service.yaml
+│           └── hpa.yaml
+├── .github/workflows/           # CI/CD Pipelines
+│   ├── infrastructure-cd.yml   # Terraform + Ansible
+│   ├── main-ci.yml             # Build Docker images
+│   └── deploy-cd.yml           # Deploy to EKS
+├── bootstrap-backend.sh         # Setup Terraform backend
+├── docker-compose.yml           # Local development
+├── GITHUB_SECRETS_GUIDE.md      # Hướng dẫn Secrets
+├── PRODUCTION_DEPLOYMENT_GUIDE.md # Hướng dẫn Deploy
+├── ARCHITECTURE.md              # Kiến trúc chi tiết
+└── README.md                    # File này
 ```
 
-## 🔄 Thay đổi so với kiến trúc mẫu
+---
 
-1. **MongoDB → PostgreSQL**: DocumentDB không còn free tier
-2. **SonarQube self-hosted**: Miễn phí hoàn toàn, hỗ trợ private repos
-3. **Application**: Document Management → Product Management (tránh trùng code)
+## CI/CD Pipeline
 
-## 📄 License
+### 1. Infrastructure Provisioning (infrastructure-cd.yml)
+
+**Trigger:** Push to main (terraform/** or ansible/**)
+
+```
+Security Scan → Terraform Plan → Manual Approval → Terraform Apply
+    ↓
+Ansible Configuration (DB + NFS) → Kubernetes Base Setup
+```
+
+**Thời gian:** 30-40 phút
+
+### 2. Build & Release (main-ci.yml)
+
+**Trigger:** Push to main (app/**)
+
+```
+Wait for Infrastructure → Build Backend → Build Frontend
+    ↓                          ↓              ↓
+                        Trivy Scan      Trivy Scan
+                             ↓              ↓
+                        Push to Hub    Push to Hub
+```
+
+**Thời gian:** 5-10 phút
+
+### 3. Continuous Deployment (deploy-cd.yml)
+
+**Trigger:** After "Build & Release" success
+
+```
+Configure kubectl → Update Manifests → Deploy to EKS
+    ↓
+Rolling Update → Wait for Rollout → Verify
+```
+
+**Thời gian:** 3-5 phút
+
+---
+
+## Monitoring
+
+### Kubernetes Resources
+
+```bash
+# Xem tất cả resources
+kubectl get all -n productx
+
+# Xem pods
+kubectl get pods -n productx -o wide
+
+# Xem logs
+kubectl logs -f deployment/backend -n productx
+kubectl logs -f deployment/frontend -n productx
+
+# Xem events
+kubectl get events -n productx --sort-by='.lastTimestamp'
+
+# Xem HPA status
+kubectl get hpa -n productx
+
+# Xem Ingress
+kubectl get ingress -n productx
+```
+
+### Application Health
+
+```bash
+# Backend health check
+curl http://<alb-url>/api/actuator/health
+
+# Frontend health check
+curl http://<alb-url>/
+```
+
+---
+
+## Troubleshooting
+
+### ❌ Pods không start
+
+```bash
+# Xem logs
+kubectl logs <pod-name> -n productx
+
+# Xem events
+kubectl describe pod <pod-name> -n productx
+
+# Xem previous logs (nếu pod restart)
+kubectl logs <pod-name> -n productx --previous
+```
+
+### ❌ Database connection failed
+
+```bash
+# Test connectivity từ pod
+kubectl exec -it <backend-pod> -n productx -- nc -zv <db-ip> 5432
+
+# Kiểm tra ConfigMap
+kubectl get configmap app-config -n productx -o yaml
+
+# Kiểm tra Secrets
+kubectl get secret app-secrets -n productx -o yaml
+```
+
+### ❌ NFS mount failed
+
+```bash
+# Kiểm tra PV/PVC
+kubectl get pv,pvc -n productx
+
+# Describe PVC
+kubectl describe pvc nfs-uploads-pvc -n productx
+
+# SSH vào DB server và check NFS
+ssh -i productx-key.pem ubuntu@<db-ip>
+sudo systemctl status nfs-kernel-server
+sudo exportfs -v
+```
+
+### ❌ ALB không được tạo
+
+```bash
+# Kiểm tra AWS Load Balancer Controller
+kubectl get deployment -n kube-system aws-load-balancer-controller
+
+# Xem logs
+kubectl logs -n kube-system deployment/aws-load-balancer-controller
+
+# Describe Ingress
+kubectl describe ingress app-ingress -n productx
+```
+
+**Xem thêm:** [PRODUCTION_DEPLOYMENT_GUIDE.md - Troubleshooting](./PRODUCTION_DEPLOYMENT_GUIDE.md#troubleshooting)
+
+---
+
+## Testing
+
+### Test Horizontal Pod Autoscaling
+
+```bash
+# Tạo load generator
+kubectl run -i --tty load-generator --rm --image=busybox --restart=Never -- /bin/sh
+
+# Trong pod, chạy:
+while true; do wget -q -O- http://backend-svc.productx.svc.cluster.local:8080/api/products; done
+
+# Terminal khác, xem HPA scaling:
+kubectl get hpa -n productx -w
+```
+
+### Test Self-healing
+
+```bash
+# Xóa một pod
+kubectl delete pod <pod-name> -n productx
+
+# Kubernetes sẽ tự động tạo pod mới
+kubectl get pods -n productx -w
+```
+
+---
+
+## Cleanup
+
+### Xóa ứng dụng (giữ infrastructure)
+
+```bash
+kubectl delete namespace productx
+```
+
+### Xóa toàn bộ infrastructure
+
+```bash
+# Qua GitHub Actions
+1. Actions → Infrastructure Provisioning
+2. Run workflow
+3. Action: destroy
+4. Confirm: DESTROY
+
+# Hoặc local
+cd terraform
+terraform destroy -var="key_name=productx-key"
+```
+
+---
+
+## So sánh với kiến trúc mẫu
+
+| Thành phần | Example | DevOps_Final | Lý do thay đổi |
+|-----------|---------|--------------|----------------|
+| Application | Document Management | Product Management | Tránh trùng code |
+| Database | PostgreSQL | PostgreSQL | Giữ nguyên |
+| Code Quality | SonarQube (self-hosted) | (Removed) | Đơn giản hóa |
+| Namespace | devops-final | productx | Tên riêng biệt |
+| Docker Images | document-management-* | productx-* | Tên riêng biệt |
+
+---
+
+## Tài liệu tham khảo
+
+- [AWS EKS Documentation](https://docs.aws.amazon.com/eks/)
+- [Kubernetes Documentation](https://kubernetes.io/docs/)
+- [Terraform AWS Provider](https://registry.terraform.io/providers/hashicorp/aws/latest/docs)
+- [Spring Boot Documentation](https://spring.io/projects/spring-boot)
+- [React Documentation](https://react.dev/)
+
+---
+
+## License
 
 This project is for educational purposes (DevOps Final Exam).
 
-## 👥 Authors
+---
+
+## Contributors
 
 - Your Name - DevOps Engineer
+- GitHub: [@yourusername](https://github.com/yourusername)
+
+---
+
+**🚀 Happy Deploying!**
