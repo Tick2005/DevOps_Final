@@ -1,7 +1,7 @@
 # =============================================================================
-# SITE.YML - Main playbook chạy tất cả cấu hình
+# SITE.YML - Main playbook for ProductX Infrastructure
 # =============================================================================
-# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/site.yml -e "db_password=YOUR_PASSWORD"
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/site.yml
 # =============================================================================
 
 ---
@@ -50,7 +50,6 @@
 # Import specific playbooks
 - import_playbook: database.yml
 - import_playbook: nfs-server.yml
-- import_playbook: sonarqube.yml
 
 - name: Final summary
   hosts: localhost
@@ -66,11 +65,9 @@
           
           💾 PostgreSQL: Ready on port 5432
           📁 NFS Server: Ready on port 2049
-          🔍 SonarQube: Ready on port 9000
           
           Next steps:
           1. Update K8s manifests with DB and NFS Private IPs
-          2. Configure SonarQube (admin/admin)
-          3. Deploy application to EKS
-          4. Configure CI/CD pipeline
+          2. Deploy application to EKS
+          3. Configure CI/CD pipeline
           ============================================

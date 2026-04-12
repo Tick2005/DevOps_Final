@@ -1,0 +1,18 @@
+# =============================================================================
+# FRONTEND SERVICE - ProductX Frontend
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-svc
+  namespace: productx
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
