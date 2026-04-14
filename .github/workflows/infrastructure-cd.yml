@@ -81,6 +81,7 @@ jobs:
   terraform-plan:
     name: Terraform Plan
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: security-scan
     if: github.event.inputs.action != 'destroy'
     
@@ -119,6 +120,22 @@ jobs:
         working-directory: terraform
         run: terraform init
       
+      - name: Cleanup Legacy Helm State
+        working-directory: terraform
+        run: |
+          echo "🧹 Checking for legacy Helm resources in state..."
+          
+          # Remove helm_release if exists (from previous deployments)
+          if terraform state list 2>/dev/null | grep -q "helm_release"; then
+            echo "  Found helm_release in state, removing..."
+            terraform state rm helm_release.aws_load_balancer_controller 2>/dev/null || true
+            echo "  ✅ Removed from state"
+          else
+            echo "  ✅ No helm_release in state"
+          fi
+          
+          echo "✅ State cleanup completed"
+      
       - name: Terraform Validate
         working-directory: terraform
         run: terraform validate
@@ -126,6 +143,7 @@ jobs:
       - name: Terraform Plan
         id: plan
         working-directory: terraform
+        timeout-minutes: 20
         run: |
           if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
             ENABLE_HTTPS="true"
@@ -133,19 +151,33 @@ jobs:
             ENABLE_HTTPS="false"
           fi
           
+          set +e  # Don't exit on error
           terraform plan \
             -out=tfplan \
             -no-color \
             -detailed-exitcode \
             -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
             -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
-            -var="enable_https=${ENABLE_HTTPS}" \
-            || export exitcode=$?
+            -var="enable_https=${ENABLE_HTTPS}"
+          
+          exitcode=$?
+          set -e  # Re-enable exit on error
           
           echo "exitcode=$exitcode" >> $GITHUB_OUTPUT
           
+          # Exit codes:
+          # 0 = No changes
+          # 1 = Error
+          # 2 = Success with changes
           if [ $exitcode -eq 1 ]; then
+            echo "❌ Terraform plan failed"
             exit 1
+          elif [ $exitcode -eq 2 ]; then
+            echo "✅ Terraform plan succeeded with changes"
+            exit 0
+          else
+            echo "✅ Terraform plan succeeded with no changes"
+            exit 0
           fi
       
       - name: Upload Terraform Plan
@@ -161,6 +193,7 @@ jobs:
   terraform-apply:
     name: Terraform Apply
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     needs: terraform-plan
     if: github.event.inputs.action != 'destroy'
     
@@ -198,6 +231,16 @@ jobs:
         working-directory: terraform
         run: terraform init
       
+      - name: Cleanup Legacy Helm State
+        working-directory: terraform
+        run: |
+          echo "🧹 Checking for legacy Helm resources in state..."
+          if terraform state list 2>/dev/null | grep -q "helm_release"; then
+            echo "  Removing helm_release from state..."
+            terraform state rm helm_release.aws_load_balancer_controller 2>/dev/null || true
+            echo "  ✅ Removed"
+          fi
+      
       - name: Download Terraform Plan
         uses: actions/download-artifact@v4
         with:
@@ -206,6 +249,7 @@ jobs:
       
       - name: Terraform Apply
         working-directory: terraform
+        timeout-minutes: 45
         run: terraform apply -auto-approve tfplan
       
       - name: Export Terraform Outputs
@@ -229,6 +273,7 @@ jobs:
   ansible-config:
     name: Ansible Configuration
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     needs: terraform-apply
     
     steps:
@@ -295,6 +340,7 @@ jobs:
   kubernetes-setup:
     name: Kubernetes Base Setup
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: [terraform-apply, ansible-config]
     
     steps:
@@ -321,6 +367,126 @@ jobs:
             --region ${{ env.AWS_REGION }}
           kubectl version --client
           kubectl cluster-info
+      
+      - name: Setup Terraform for Helm
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+      
+      - name: Check and Cleanup Existing Helm Release
+        run: |
+          echo "🔍 Checking for existing AWS Load Balancer Controller Helm release..."
+          
+          # Check if helm release exists
+          if helm list -n kube-system | grep -q "aws-load-balancer-controller"; then
+            echo "⚠️ Found existing Helm release, cleaning up..."
+            
+            # Uninstall existing release
+            helm uninstall aws-load-balancer-controller -n kube-system || true
+            
+            echo "⏳ Waiting for cleanup to complete..."
+            sleep 15
+            
+            # Verify cleanup
+            if helm list -n kube-system | grep -q "aws-load-balancer-controller"; then
+              echo "❌ Failed to cleanup existing release"
+              exit 1
+            else
+              echo "✅ Existing release cleaned up successfully"
+            fi
+          else
+            echo "✅ No existing Helm release found"
+          fi
+      
+      - name: Install AWS Load Balancer Controller via Terraform Helm
+        working-directory: terraform-helm
+        run: |
+          echo "📦 Installing AWS Load Balancer Controller via Terraform Helm Provider..."
+          
+          # Get values from Terraform outputs
+          CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
+          VPC_ID=$(jq -r '.vpc_id.value' ../outputs.json)
+          ROLE_ARN=$(jq -r '.aws_load_balancer_controller_role_arn.value' ../outputs.json)
+          
+          echo "Cluster: $CLUSTER_NAME"
+          echo "VPC ID: $VPC_ID"
+          echo "Role ARN: $ROLE_ARN"
+          
+          # Initialize Terraform (cluster is ready now!)
+          terraform init
+          
+          # Apply Helm chart
+          terraform apply -auto-approve \
+            -var="cluster_name=$CLUSTER_NAME" \
+            -var="vpc_id=$VPC_ID" \
+            -var="lb_controller_role_arn=$ROLE_ARN" \
+            -var="aws_region=${{ env.AWS_REGION }}"
+          
+          echo "✅ AWS Load Balancer Controller installed via Terraform Helm"
+      
+      - name: Verify AWS Load Balancer Controller
+        run: |
+          echo "🔍 Verifying AWS Load Balancer Controller installation..."
+          
+          # Check deployment
+          kubectl get deployment -n kube-system aws-load-balancer-controller
+          
+          # Check pods
+          kubectl get pods -n kube-system -l app.kubernetes.io/name=aws-load-balancer-controller
+          
+          # Wait for pods to be ready
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=aws-load-balancer-controller \
+            -n kube-system \
+            --timeout=300s
+          
+          echo "✅ AWS Load Balancer Controller is ready"
+      
+      - name: Install Monitoring Stack via Terraform
+        working-directory: monitoring-stack
+        run: |
+          echo "📊 Installing Monitoring Stack (Prometheus + Grafana + Alertmanager)..."
+          
+          # Get values from Terraform outputs
+          CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
+          CLUSTER_ENDPOINT=$(jq -r '.cluster_endpoint.value' ../outputs.json)
+          CLUSTER_CA=$(jq -r '.cluster_certificate_authority_data.value' ../outputs.json)
+          
+          echo "Cluster: $CLUSTER_NAME"
+          echo "Endpoint: $CLUSTER_ENDPOINT"
+          
+          # Initialize Terraform
+          terraform init
+          
+          # Apply monitoring stack
+          terraform apply -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="cluster_name=$CLUSTER_NAME" \
+            -var="cluster_endpoint=$CLUSTER_ENDPOINT" \
+            -var="cluster_ca_certificate=$CLUSTER_CA" \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+            -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
+          
+          echo "✅ Monitoring Stack installed"
+      
+      - name: Verify Monitoring Stack
+        run: |
+          echo "🔍 Verifying Monitoring Stack installation..."
+          
+          # Wait for monitoring namespace
+          kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/monitoring --timeout=60s || true
+          
+          # Check pods (may take time to start)
+          echo "📊 Monitoring Pods:"
+          kubectl get pods -n monitoring || echo "Pods still starting..."
+          
+          # Check PVCs
+          echo "📊 Persistent Volume Claims:"
+          kubectl get pvc -n monitoring || echo "PVCs still creating..."
+          
+          echo "✅ Monitoring Stack deployment initiated"
+          echo "⏳ Note: Prometheus and Grafana may take 5-10 minutes to fully start"
       
       - name: Apply Namespace
         run: kubectl apply -f kubernetes/namespace.yaml
@@ -391,7 +557,7 @@ jobs:
           kubectl get ingress -n productx
 
   # ===========================================================================
-  # JOB 6: TERRAFORM DESTROY
+  # JOB 6: TERRAFORM DESTROY (with strict safeguards)
   # ===========================================================================
   terraform-destroy:
     name: Terraform Destroy
@@ -423,15 +589,162 @@ jobs:
       - name: Pre-Destroy Warning
         run: |
           echo "⚠️⚠️⚠️ DESTROYING INFRASTRUCTURE ⚠️⚠️⚠️"
+          echo ""
+          echo "This will DELETE:"
+          echo "  - EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "  - EC2 Instances (DB + NFS)"
+          echo "  - VPC and all networking"
+          echo "  - All data and configurations"
+          echo ""
           echo "Waiting 30 seconds for final cancellation..."
           sleep 30
       
       - name: Cleanup Kubernetes Resources
         run: |
+          echo "🧹 Step 1: Deleting Kubernetes resources..."
+          
           if kubectl cluster-info &>/dev/null; then
+            echo "  Deleting Ingress (triggers ALB deletion)..."
             kubectl delete ingress --all -n productx 2>/dev/null || true
+            
+            echo "  Deleting LoadBalancer services..."
             kubectl delete svc --all -n productx 2>/dev/null || true
+            
+            echo "  Deleting AWS Load Balancer Controller..."
+            helm uninstall aws-load-balancer-controller -n kube-system 2>/dev/null || true
+            
+            echo "✅ Kubernetes resources deleted"
+            echo "⏳ Waiting 60 seconds for ALB deletion..."
             sleep 60
+          else
+            echo "⚠️ kubectl not configured, skipping Kubernetes cleanup"
+          fi
+      
+      - name: Force Delete ALBs
+        run: |
+          echo "🧹 Step 2: Force deleting ALBs..."
+          
+          ALB_ARNS=$(aws elbv2 describe-load-balancers --region ${{ env.AWS_REGION }} \
+            --query "LoadBalancers[?contains(LoadBalancerName, 'k8s-productx')].LoadBalancerArn" \
+            --output text 2>/dev/null || echo "")
+          
+          if [ -z "$ALB_ARNS" ]; then
+            echo "✅ No ALBs found"
+          else
+            for arn in $ALB_ARNS; do
+              echo "  Deleting: $arn"
+              aws elbv2 delete-load-balancer --load-balancer-arn "$arn" --region ${{ env.AWS_REGION }} 2>/dev/null || true
+            done
+            echo "✅ ALB deletion triggered"
+            echo "⏳ Waiting 120 seconds for ALB cleanup..."
+            sleep 120
+          fi
+      
+      - name: Cleanup Security Groups
+        run: |
+          echo "🧹 Step 3: Cleaning up Kubernetes Security Groups..."
+          
+          VPC_ID=$(aws ec2 describe-vpcs --region ${{ env.AWS_REGION }} \
+            --filters "Name=tag:Name,Values=productx-vpc" \
+            --query "Vpcs[0].VpcId" --output text 2>/dev/null || echo "")
+          
+          if [ -z "$VPC_ID" ] || [ "$VPC_ID" == "None" ]; then
+            echo "⚠️ VPC not found"
+          else
+            echo "Found VPC: $VPC_ID"
+            
+            # Get all non-default SGs
+            SG_IDS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+              --filters "Name=vpc-id,Values=$VPC_ID" \
+              --query "SecurityGroups[?GroupName!='default'].GroupId" \
+              --output text 2>/dev/null || echo "")
+            
+            if [ -z "$SG_IDS" ]; then
+              echo "✅ No Security Groups to clean"
+            else
+              echo "  Removing all rules to break dependencies..."
+              for SG_ID in $SG_IDS; do
+                # Revoke all ingress rules
+                INGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissions" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$INGRESS" != "[]" ] && [ "$INGRESS" != "null" ]; then
+                  echo "$INGRESS" > /tmp/ing-$SG_ID.json
+                  aws ec2 revoke-security-group-ingress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/ing-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/ing-$SG_ID.json
+                fi
+                
+                # Revoke all egress rules
+                EGRESS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].IpPermissionsEgress" --output json 2>/dev/null || echo "[]")
+                
+                if [ "$EGRESS" != "[]" ] && [ "$EGRESS" != "null" ]; then
+                  echo "$EGRESS" > /tmp/eg-$SG_ID.json
+                  aws ec2 revoke-security-group-egress --region ${{ env.AWS_REGION }} \
+                    --group-id $SG_ID --ip-permissions file:///tmp/eg-$SG_ID.json 2>/dev/null || true
+                  rm -f /tmp/eg-$SG_ID.json
+                fi
+              done
+              
+              sleep 10
+              
+              echo "  Deleting Kubernetes Security Groups..."
+              for SG_ID in $SG_IDS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                # Check if it's a Kubernetes SG
+                IS_K8S_SG=false
+                if [[ "$SG_NAME" == k8s-traffic-* ]]; then
+                  IS_K8S_SG=true
+                fi
+                
+                # Check for ALB tag
+                HAS_ALB_TAG=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].Tags[?Key=='elbv2.k8s.aws/cluster'].Value" \
+                  --output text 2>/dev/null || echo "")
+                if [ ! -z "$HAS_ALB_TAG" ]; then
+                  IS_K8S_SG=true
+                fi
+                
+                if [ "$IS_K8S_SG" = true ]; then
+                  echo "    Deleting Kubernetes SG: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Cannot delete (will retry)"
+                  }
+                else
+                  echo "    Skipping Terraform SG: $SG_ID ($SG_NAME)"
+                fi
+              done
+              
+              # Final retry for stubborn SGs
+              echo "  Final retry - deleting remaining non-default SGs..."
+              sleep 15
+              
+              REMAINING_SGS=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} \
+                --filters "Name=vpc-id,Values=$VPC_ID" \
+                --query "SecurityGroups[?GroupName!='default'].GroupId" \
+                --output text 2>/dev/null || echo "")
+              
+              for SG_ID in $REMAINING_SGS; do
+                SG_NAME=$(aws ec2 describe-security-groups --region ${{ env.AWS_REGION }} --group-ids $SG_ID \
+                  --query "SecurityGroups[0].GroupName" --output text 2>/dev/null || echo "")
+                
+                if [ "$SG_NAME" != "default" ]; then
+                  echo "    Attempting to delete: $SG_ID ($SG_NAME)"
+                  aws ec2 delete-security-group --region ${{ env.AWS_REGION }} --group-id $SG_ID 2>/dev/null && {
+                    echo "      ✅ Deleted"
+                  } || {
+                    echo "      ⚠️ Still has dependencies (Terraform will handle)"
+                  }
+                fi
+              done
+              
+              echo "✅ Security Groups cleanup completed"
+            fi
           fi
       
       - name: Setup Terraform
@@ -439,10 +752,16 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
       
-      - name: Configure Backend
+      - name: Configure Backend with Secret
         working-directory: terraform
         run: |
-          sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          if [ -n "${{ secrets.TF_BACKEND_BUCKET }}" ]; then
+            echo "✅ Using backend bucket from secret: ${{ secrets.TF_BACKEND_BUCKET }}"
+            sed -i 's/productx-tfstate-REPLACE_ME/${{ secrets.TF_BACKEND_BUCKET }}/g' backend.tf
+          else
+            echo "⚠️ TF_BACKEND_BUCKET secret not set!"
+            exit 1
+          fi
       
       - name: Terraform Init
         working-directory: terraform
@@ -451,13 +770,37 @@ jobs:
       - name: Terraform Destroy
         working-directory: terraform
         run: |
-          terraform destroy -auto-approve \
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            ENABLE_HTTPS="true"
+          else
+            ENABLE_HTTPS="false"
+          fi
+          
+          terraform destroy -auto-approve -no-color \
             -var="key_name=${{ secrets.AWS_KEY_NAME }}" \
             -var="domain_name=${{ secrets.DOMAIN_NAME }}" \
-            -var="enable_https=false"
+            -var="enable_https=${ENABLE_HTTPS}"
       
       - name: Destroy Complete
         run: |
           echo "============================================="
           echo "✅ INFRASTRUCTURE DESTROYED"
+          echo "============================================="
+          echo ""
+          echo "Deleted resources:"
+          echo "  ✅ EKS Cluster"
+          echo "  ✅ EC2 Instances"
+          echo "  ✅ VPC and Networking"
+          echo "  ✅ Security Groups"
+          echo "  ✅ Load Balancers"
+          echo ""
+          echo "⚠️ Manual cleanup may be needed for:"
+          echo "  - S3 Terraform state bucket"
+          echo "  - DynamoDB state lock table"
+          echo "  - ACM certificates"
+          echo "  - CloudWatch log groups"
+          echo ""
+          echo "Run cleanup scripts if needed:"
+          echo "  ./cleanup-failed-resources.sh"
+          echo "  ./full-cleanup.sh"
           echo "============================================="

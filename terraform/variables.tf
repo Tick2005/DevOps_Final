@@ -120,3 +120,26 @@ variable "enable_https" {
   type        = bool
   default     = false
 }
+
+# ==========================================
+# MONITORING CONFIGURATION
+# ==========================================
+variable "grafana_admin_password" {
+  description = "Grafana admin password"
+  type        = string
+  default     = "admin123"
+  sensitive   = true
+}
+
+variable "alert_email" {
+  description = "Email để nhận alerts từ Alertmanager"
+  type        = string
+  default     = ""
+}
+
+variable "alert_email_password" {
+  description = "Password cho email alerts (Gmail App Password)"
+  type        = string
+  default     = ""
+  sensitive   = true
+}

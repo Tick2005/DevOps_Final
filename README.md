@@ -10,6 +10,12 @@ Hệ thống quản lý sản phẩm với kiến trúc microservices triển kh
 3. **[FIX_IAM_PERMISSIONS.md](./FIX_IAM_PERMISSIONS.md)** - Fix lỗi IAM permissions và instance types
 4. **[ARCHITECTURE.md](./ARCHITECTURE.md)** - Kiến trúc hệ thống chi tiết
 
+### 🚨 Quick Fixes
+- **[QUICK_FIX_IAM_ROLE_ERROR.md](./QUICK_FIX_IAM_ROLE_ERROR.md)** - Fix lỗi "IAM Role already exists" (2 phút)
+- **[FIX_ANSIBLE_CALLBACK.md](./FIX_ANSIBLE_CALLBACK.md)** - Fix lỗi Ansible callback plugin (đã fix)
+- **[TROUBLESHOOTING_QUICK_REFERENCE.md](./TROUBLESHOOTING_QUICK_REFERENCE.md)** - Quick fixes cho 15+ lỗi thường gặp
+- **[SCRIPTS_GUIDE.md](./SCRIPTS_GUIDE.md)** - Hướng dẫn sử dụng cleanup scripts
+
 ### 📖 Nội dung chính
 - [Tổng quan](#tổng-quan)
 - [Yêu cầu](#yêu-cầu)
@@ -292,6 +298,64 @@ curl http://<alb-url>/
 ---
 
 ## Troubleshooting
+
+### ❌ Pods không start
+
+```bash
+# Xem logs
+kubectl logs <pod-name> -n productx
+
+# Xem events
+kubectl describe pod <pod-name> -n productx
+
+# Xem previous logs (nếu pod restart)
+kubectl logs <pod-name> -n productx --previous
+```
+
+### ❌ IAM Role already exists
+
+```bash
+# Quick fix (2 phút)
+./cleanup-iam-roles.sh
+```
+
+**Chi tiết:** [QUICK_FIX_IAM_ROLE_ERROR.md](./QUICK_FIX_IAM_ROLE_ERROR.md)
+
+### ❌ Elastic IP limit exceeded
+
+```bash
+# Quick fix
+./release-elastic-ips.sh
+```
+
+### ❌ Resources already exist (KMS, CloudWatch, etc.)
+
+```bash
+# Quick fix
+./cleanup-failed-resources.sh
+```
+
+### ❌ Complete cleanup and restart
+
+```bash
+# Run full cleanup
+./full-cleanup.sh
+
+# Wait 5-10 minutes, then re-deploy
+cd terraform
+terraform apply -var="key_name=productx-key"
+```
+
+**Xem thêm:** 
+- [QUICK_FIX_IAM_ROLE_ERROR.md](./QUICK_FIX_IAM_ROLE_ERROR.md) - Fix lỗi IAM Role conflict (2 phút)
+- [TROUBLESHOOTING_QUICK_REFERENCE.md](./TROUBLESHOOTING_QUICK_REFERENCE.md) - Quick fixes cho 14+ lỗi thường gặp
+- [FIX_IAM_PERMISSIONS.md](./FIX_IAM_PERMISSIONS.md) - Fix IAM và resource issues
+- [SCRIPTS_GUIDE.md](./SCRIPTS_GUIDE.md) - Hướng dẫn sử dụng tất cả scripts
+- [PRODUCTION_DEPLOYMENT_GUIDE.md - Troubleshooting](./PRODUCTION_DEPLOYMENT_GUIDE.md#troubleshooting)
+
+---
+
+## Cleanup
 
 ### ❌ Pods không start
 

@@ -1,7 +1,8 @@
 # =============================================================================
 # LOAD-BALANCER-CONTROLLER.TF - AWS Load Balancer Controller for ProductX
 # =============================================================================
-# Automatically installs AWS Load Balancer Controller for Ingress to work
+# IAM Role for Load Balancer Controller
+# Installation will be done via kubectl in GitHub Actions workflow
 # =============================================================================
 
 # =============================================================================
@@ -35,70 +36,18 @@ module "aws_load_balancer_controller_irsa" {
 }
 
 # =============================================================================
-# HELM PROVIDER - To install AWS Load Balancer Controller
+# OUTPUT - IAM Role ARN for Load Balancer Controller
 # =============================================================================
-provider "helm" {
-  kubernetes {
-    host                   = module.eks.cluster_endpoint
-    cluster_ca_certificate = base64decode(module.eks.cluster_certificate_authority_data)
-
-    exec {
-      api_version = "client.authentication.k8s.io/v1beta1"
-      command     = "aws"
-      args = [
-        "eks",
-        "get-token",
-        "--cluster-name",
-        module.eks.cluster_name,
-        "--region",
-        var.aws_region
-      ]
-    }
-  }
+output "aws_load_balancer_controller_role_arn" {
+  description = "IAM Role ARN for AWS Load Balancer Controller"
+  value       = module.aws_load_balancer_controller_irsa.iam_role_arn
 }
 
 # =============================================================================
-# HELM RELEASE - AWS Load Balancer Controller
+# NOTE: AWS Load Balancer Controller installation
 # =============================================================================
-resource "helm_release" "aws_load_balancer_controller" {
-  name       = "aws-load-balancer-controller"
-  repository = "https://aws.github.io/eks-charts"
-  chart      = "aws-load-balancer-controller"
-  namespace  = "kube-system"
-  version    = "1.7.1"
-
-  set {
-    name  = "clusterName"
-    value = module.eks.cluster_name
-  }
-
-  set {
-    name  = "serviceAccount.create"
-    value = "true"
-  }
-
-  set {
-    name  = "serviceAccount.name"
-    value = "aws-load-balancer-controller"
-  }
-
-  set {
-    name  = "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn"
-    value = module.aws_load_balancer_controller_irsa.iam_role_arn
-  }
-
-  set {
-    name  = "region"
-    value = var.aws_region
-  }
-
-  set {
-    name  = "vpcId"
-    value = module.vpc.vpc_id
-  }
-
-  depends_on = [
-    module.eks,
-    module.aws_load_balancer_controller_irsa
-  ]
-}
+# The controller will be installed via Terraform Helm Provider in a separate
+# terraform-helm module, which runs AFTER EKS cluster is ready in GitHub Actions.
+#
+# This avoids Helm provider initialization issues.
+# =============================================================================

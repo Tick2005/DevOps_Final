@@ -24,6 +24,12 @@ public class ProductService {
       .collect(Collectors.toList());
   }
 
+  public ProductResponse getProductById(Long id, String host) {
+    ProductDocument product = repository.findById(id)
+      .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
+    return ProductResponse.from(product, host, tier);
+  }
+
   public ProductResponse createProduct(ProductRequest request, String host) {
     ProductDocument product = mapRequest(new ProductDocument(), request);
     return ProductResponse.from(repository.save(product), host, tier);
