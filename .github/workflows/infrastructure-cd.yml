@@ -442,6 +442,52 @@ jobs:
           
           echo "✅ AWS Load Balancer Controller is ready"
       
+      - name: Install Monitoring Stack via Terraform
+        working-directory: monitoring-stack
+        run: |
+          echo "📊 Installing Monitoring Stack (Prometheus + Grafana + Alertmanager)..."
+          
+          # Get values from Terraform outputs
+          CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
+          CLUSTER_ENDPOINT=$(jq -r '.cluster_endpoint.value' ../outputs.json)
+          CLUSTER_CA=$(jq -r '.cluster_certificate_authority_data.value' ../outputs.json)
+          
+          echo "Cluster: $CLUSTER_NAME"
+          echo "Endpoint: $CLUSTER_ENDPOINT"
+          
+          # Initialize Terraform
+          terraform init
+          
+          # Apply monitoring stack
+          terraform apply -auto-approve \
+            -var="aws_region=${{ env.AWS_REGION }}" \
+            -var="cluster_name=$CLUSTER_NAME" \
+            -var="cluster_endpoint=$CLUSTER_ENDPOINT" \
+            -var="cluster_ca_certificate=$CLUSTER_CA" \
+            -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+            -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+            -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
+          
+          echo "✅ Monitoring Stack installed"
+      
+      - name: Verify Monitoring Stack
+        run: |
+          echo "🔍 Verifying Monitoring Stack installation..."
+          
+          # Wait for monitoring namespace
+          kubectl wait --for=jsonpath='{.status.phase}'=Active namespace/monitoring --timeout=60s || true
+          
+          # Check pods (may take time to start)
+          echo "📊 Monitoring Pods:"
+          kubectl get pods -n monitoring || echo "Pods still starting..."
+          
+          # Check PVCs
+          echo "📊 Persistent Volume Claims:"
+          kubectl get pvc -n monitoring || echo "PVCs still creating..."
+          
+          echo "✅ Monitoring Stack deployment initiated"
+          echo "⏳ Note: Prometheus and Grafana may take 5-10 minutes to fully start"
+      
       - name: Apply Namespace
         run: kubectl apply -f kubernetes/namespace.yaml
       
