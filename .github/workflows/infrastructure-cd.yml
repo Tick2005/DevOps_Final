@@ -444,26 +444,17 @@ jobs:
       
       - name: Install Monitoring Stack via Terraform
         working-directory: monitoring-stack
+        env:
+          KUBE_CONFIG_PATH: ~/.kube/config
         run: |
           echo "📊 Installing Monitoring Stack (Prometheus + Grafana + Alertmanager)..."
-          
-          # Get values from Terraform outputs
-          CLUSTER_NAME="${{ secrets.EKS_CLUSTER_NAME }}"
-          CLUSTER_ENDPOINT=$(jq -r '.cluster_endpoint.value' ../outputs.json)
-          CLUSTER_CA=$(jq -r '.cluster_certificate_authority_data.value' ../outputs.json)
-          
-          echo "Cluster: $CLUSTER_NAME"
-          echo "Endpoint: $CLUSTER_ENDPOINT"
           
           # Initialize Terraform
           terraform init
           
           # Apply monitoring stack
+          # Providers will use KUBECONFIG from environment
           terraform apply -auto-approve \
-            -var="aws_region=${{ env.AWS_REGION }}" \
-            -var="cluster_name=$CLUSTER_NAME" \
-            -var="cluster_endpoint=$CLUSTER_ENDPOINT" \
-            -var="cluster_ca_certificate=$CLUSTER_CA" \
             -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
             -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
             -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}"
