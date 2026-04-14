@@ -1,10 +1,10 @@
 # =============================================================================
-# NAMESPACE.YAML - Tạo namespace cho ứng dụng
+# NAMESPACE.YAML - Namespace for ProductX
 # =============================================================================
 apiVersion: v1
 kind: Namespace
 metadata:
   name: productx
   labels:
-    name: productx
+    app.kubernetes.io/name: productx
     environment: production

@@ -1,21 +1,27 @@
 # Build stage
-FROM maven:3.9-eclipse-temurin-17 AS builder
+FROM eclipse-temurin:21-jdk-alpine AS builder
 
 WORKDIR /app
 
-# Copy pom.xml
+# Copy Maven files
 COPY pom.xml .
-
-# Copy source code
 COPY src ./src
 
-# Build the application
-RUN mvn clean package -DskipTests
+# Download dependencies and build
+RUN apk add --no-cache maven && \
+    mvn dependency:go-offline -B && \
+    mvn package -DskipTests -B
 
 # Runtime stage
-FROM eclipse-temurin:21-jre-noble
+FROM eclipse-temurin:21-jre-alpine
 
 WORKDIR /app
+
+# Update Alpine packages to fix CVEs
+RUN apk upgrade --no-cache
+
+# Create uploads directory
+RUN mkdir -p /app/uploads
 
 # Copy built JAR from builder
 COPY --from=builder /app/target/*.jar application.jar

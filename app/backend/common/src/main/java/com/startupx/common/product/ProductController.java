@@ -30,6 +30,11 @@ public class ProductController {
     return service.listProducts(resolveHost(request));
   }
 
+  @GetMapping("/{id}")
+  public ProductResponse getById(@PathVariable Long id, HttpServletRequest request) {
+    return service.getProductById(id, resolveHost(request));
+  }
+
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
   public ProductResponse create(@Valid @RequestBody ProductRequest request, HttpServletRequest httpRequest) {
