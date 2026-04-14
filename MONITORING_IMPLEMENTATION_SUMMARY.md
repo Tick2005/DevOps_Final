@@ -4,7 +4,7 @@
 
 ### Files Created/Modified:
 
-**Terraform Monitoring Module** (`terraform-monitoring/`):
+**Terraform Monitoring Module** (`monitoring-stack/`):
 - ✅ `providers.tf` - AWS, Kubernetes, Helm providers
 - ✅ `variables.tf` - Input variables
 - ✅ `storage-class.tf` - gp3 storage class
@@ -78,7 +78,7 @@ Terraform Apply (Main)
     ↓
 Kubernetes Setup Job
     ├─ ALB Controller (terraform-helm/)
-    ├─ Monitoring Stack (terraform-monitoring/)
+    ├─ Monitoring Stack (monitoring-stack/)
     │   ├─ Storage Class (gp3)
     │   ├─ Metrics Server
     │   └─ kube-prometheus-stack

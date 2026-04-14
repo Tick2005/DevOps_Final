@@ -443,7 +443,7 @@ jobs:
           echo "✅ AWS Load Balancer Controller is ready"
       
       - name: Install Monitoring Stack via Terraform
-        working-directory: terraform-monitoring
+        working-directory: monitoring-stack
         run: |
           echo "📊 Installing Monitoring Stack (Prometheus + Grafana + Alertmanager)..."
           
