@@ -1,0 +1,18 @@
+# =============================================================================
+# BACKEND SERVICE - ProductX Backend
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-svc
+  namespace: productx
+  labels:
+    app: backend
+spec:
+  type: ClusterIP
+  selector:
+    app: backend
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080

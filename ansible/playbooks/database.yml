@@ -1,5 +1,7 @@
 # =============================================================================
-# DATABASE.YML - Cài đặt PostgreSQL trên DB+NFS Server
+# DATABASE.YML - Setup PostgreSQL for ProductX
+# =============================================================================
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/database.yml
 # =============================================================================
 
 ---
@@ -10,11 +12,11 @@
 
   vars:
     postgres_version: "16"
+    # Production database
     db_name: "productx_db"
     db_user: "productx_user"
-    db_name_staging: "productx_db_staging"
-    db_user_staging: "productx_staging_user"
-    db_password: "{{ db_password | default('SecurePassword123!') }}"
+    # Password được truyền từ GitHub Actions qua -e "db_password=..."
+    db_password: "{{ db_password | default('ChangeMe123!') }}"
 
   tasks:
     - name: Update apt cache
@@ -36,22 +38,20 @@
         state: started
         enabled: yes
 
-    - name: Create production database
+    - name: Create application database
       become_user: postgres
       postgresql_db:
         name: "{{ db_name }}"
         state: present
 
-    - name: Create production user
+    - name: Create application user
       become_user: postgres
       postgresql_user:
         name: "{{ db_user }}"
         password: "{{ db_password }}"
-        db: "{{ db_name }}"
-        priv: ALL
         state: present
 
-    - name: Grant all privileges to production user
+    - name: Grant all privileges to user
       become_user: postgres
       postgresql_privs:
         database: "{{ db_name }}"
@@ -59,43 +59,11 @@
         type: database
         privs: ALL
 
-    - name: Grant schema privileges to production user
+    - name: Grant schema privileges to user
       become_user: postgres
       postgresql_privs:
         database: "{{ db_name }}"
         roles: "{{ db_user }}"
-        type: schema
-        objs: public
-        privs: ALL
-
-    - name: Create staging database
-      become_user: postgres
-      postgresql_db:
-        name: "{{ db_name_staging }}"
-        state: present
-
-    - name: Create staging user
-      become_user: postgres
-      postgresql_user:
-        name: "{{ db_user_staging }}"
-        password: "{{ db_password }}"
-        db: "{{ db_name_staging }}"
-        priv: ALL
-        state: present
-
-    - name: Grant all privileges to staging user
-      become_user: postgres
-      postgresql_privs:
-        database: "{{ db_name_staging }}"
-        roles: "{{ db_user_staging }}"
-        type: database
-        privs: ALL
-
-    - name: Grant schema privileges to staging user
-      become_user: postgres
-      postgresql_privs:
-        database: "{{ db_name_staging }}"
-        roles: "{{ db_user_staging }}"
         type: schema
         objs: public
         privs: ALL
@@ -135,15 +103,9 @@
           ============================================
           Version: {{ db_version.query_result[0].version }}
           
-          PRODUCTION:
-            Database: {{ db_name }}
-            User: {{ db_user }}
-            Connection: postgresql://{{ db_user }}:***@{{ ansible_default_ipv4.address }}:5432/{{ db_name }}
-          
-          STAGING:
-            Database: {{ db_name_staging }}
-            User: {{ db_user_staging }}
-            Connection: postgresql://{{ db_user_staging }}:***@{{ ansible_default_ipv4.address }}:5432/{{ db_name_staging }}
+          Database: {{ db_name }}
+          User: {{ db_user }}
+          Connection: postgresql://{{ db_user }}:***@{{ ansible_default_ipv4.address }}:5432/{{ db_name }}
           
           Listen: 0.0.0.0:5432
           Private IP: {{ ansible_default_ipv4.address }}

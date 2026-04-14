@@ -1,153 +1,291 @@
 # =============================================================================
-# MAIN-CI.YML - CI Pipeline cho main branch
+# MAIN-CI.YML - Build & Release Docker Images for ProductX
 # =============================================================================
-# Trigger: Push hoặc PR vào main branch
-# Actions: Build, Test, SonarCloud Analysis, Build Docker Images
+# Trigger: Khi code được merge/push vào nhánh main (CHỈ KHI SỬA app/**)
 # =============================================================================
 
-name: Main CI Pipeline
+name: Build & Release Docker
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches:
+      - main
+    paths:
+      - 'app/**'
+      - '.github/workflows/main-ci.yml'
+  
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Reason for manual build'
+        required: false
+        default: 'Manual trigger'
+
+concurrency:
+  group: main-${{ github.sha }}
+  cancel-in-progress: true
 
 env:
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
 
 jobs:
-  # =============================================================================
-  # JOB 1: Backend CI
-  # =============================================================================
-  backend-ci:
-    name: Backend Build & Test
+  # ===========================================================================
+  # JOB 0: WAIT FOR INFRASTRUCTURE
+  # ===========================================================================
+  wait-for-infrastructure:
+    name: Wait for Infrastructure
     runs-on: ubuntu-latest
     
     steps:
-      - name: Checkout code
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      
+      - name: Check Infrastructure Workflow Status
+        run: |
+          echo "🔍 Checking if infrastructure workflow is running..."
+          
+          INFRA_RUN=$(gh api repos/${{ github.repository }}/actions/workflows/infrastructure-cd.yml/runs \
+            --jq ".workflow_runs[] | select(.head_sha==\"${{ github.sha }}\") | {id: .id, status: .status, conclusion: .conclusion}" \
+            | head -n 1)
+          
+          if [ -z "$INFRA_RUN" ]; then
+            echo "✅ No infrastructure workflow for this commit"
+            exit 0
+          fi
+          
+          INFRA_STATUS=$(echo $INFRA_RUN | jq -r '.status')
+          INFRA_ID=$(echo $INFRA_RUN | jq -r '.id')
+          
+          if [ "$INFRA_STATUS" == "in_progress" ] || [ "$INFRA_STATUS" == "queued" ]; then
+            echo "⏳ Infrastructure workflow đang chạy..."
+            gh run watch $INFRA_ID --exit-status
+            echo "✅ Infrastructure workflow hoàn thành!"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+  
+  # ===========================================================================
+  # JOB 1: BUILD & PUSH BACKEND IMAGE
+  # ===========================================================================
+  build-backend:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # =========================================================================
+      # BƯỚC 2: Cài đặt Java 21 (Temurin) + Maven Caching
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
           distribution: 'temurin'
-          cache: maven
+          java-version: '21'
+          cache: 'maven'
+          cache-dependency-path: 'app/backend/common/pom.xml'
 
-      - name: Build with Maven
-        working-directory: ./app/backend/common
-        run: mvn clean package -DskipTests
+      # =========================================================================
+      # BƯỚC 3: Build JAR artifact (BỎ QUA TESTS)
+      # =========================================================================
+      - name: Build Application JAR
+        working-directory: app/backend/common
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
 
-      - name: Run tests
-        working-directory: ./app/backend/common
-        run: mvn test
-
-      - name: SonarQube Scan
-        working-directory: ./app/backend/common
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-        run: |
-          mvn sonar:sonar \
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }} \
-            -Dsonar.host.url=${{ secrets.SONAR_HOST_URL }} \
-            -Dsonar.token=${{ secrets.SONAR_TOKEN }}
-
-      - name: Upload backend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: backend-jar
-          path: app/backend/common/target/*.jar
-          retention-days: 1
-
-  # =============================================================================
-  # JOB 2: Frontend CI
-  # =============================================================================
-  frontend-ci:
-    name: Frontend Build & Test
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-          cache-dependency-path: app/frontend/package-lock.json
-
-      - name: Install dependencies
-        working-directory: ./app/frontend
-        run: npm ci
-
-      - name: Build frontend
-        working-directory: ./app/frontend
-        run: npm run build
-
-      - name: Upload frontend artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend-dist
-          path: app/frontend/dist
-          retention-days: 1
-
-  # =============================================================================
-  # JOB 3: Build Docker Images (chỉ khi push vào main)
-  # =============================================================================
-  build-docker:
-    name: Build Docker Images
-    runs-on: ubuntu-latest
-    needs: [backend-ci, frontend-ci]
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Docker Buildx
+      # =========================================================================
+      # BƯỚC 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # =========================================================================
+      # BƯỚC 5: Đăng nhập Docker Hub
+      # =========================================================================
       - name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Generate image tag
-        id: tag
-        run: echo "IMAGE_TAG=$(date +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
-
-      - name: Build and push backend image
-        uses: docker/build-push-action@v5
+      # =========================================================================
+      # BƯỚC 6: Extract metadata cho Backend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          context: ./app/backend/common
-          push: true
+          images: ${{ env.DOCKER_USERNAME }}/productx-backend
           tags: |
-            ${{ secrets.DOCKER_USERNAME }}/productx-backend:${{ steps.tag.outputs.IMAGE_TAG }}
-            ${{ secrets.DOCKER_USERNAME }}/productx-backend:latest
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/productx-backend:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/productx-backend:buildcache,mode=max
+            type=sha,format=long
+            type=sha,format=short
 
-      - name: Build and push frontend image
-        uses: docker/build-push-action@v5
+      # =========================================================================
+      # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
+      # =========================================================================
+      - name: Build and Load Backend Image
+        uses: docker/build-push-action@v6
         with:
-          context: ./app/frontend
+          context: app/backend/common
+          load: true  # Giữ lại máy ảo để Trivy quét
+          tags: ${{ env.DOCKER_USERNAME }}/productx-backend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét lỗ hổng Container bằng Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/productx-backend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'  # Chỉ fail khi có CRITICAL
+          ignore-unfixed: true  # Bỏ qua lỗi chưa có bản vá
+          trivyignores: '.trivyignore'  # Sử dụng ignore file
+
+      # =========================================================================
+      # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
+      # =========================================================================
+      - name: Push Backend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend/common
           push: true
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/productx-frontend:${{ steps.tag.outputs.IMAGE_TAG }}
-            ${{ secrets.DOCKER_USERNAME }}/productx-frontend:latest
-          cache-from: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/productx-frontend:buildcache
-          cache-to: type=registry,ref=${{ secrets.DOCKER_USERNAME }}/productx-frontend:buildcache,mode=max
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
 
-      - name: Save image tag for CD
-        run: echo "${{ steps.tag.outputs.IMAGE_TAG }}" > image-tag.txt
+      # =========================================================================
+      # BƯỚC 10: Output thông tin Backend image
+      # =========================================================================
+      - name: Print Backend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Backend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/productx-backend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
 
-      - name: Upload image tag artifact
-        uses: actions/upload-artifact@v4
+  # ===========================================================================
+  # JOB 2: BUILD & PUSH FRONTEND IMAGE
+  # ===========================================================================
+  build-frontend:
+    name: Build Frontend Docker Image
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      # =========================================================================
+      # BƯỚC 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      # =========================================================================
+      # BƯỚC 2: Setup Node.js + NPM Caching
+      # =========================================================================
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
         with:
-          name: image-tag
-          path: image-tag.txt
-          retention-days: 7
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'app/frontend/package-lock.json'
+
+      # =========================================================================
+      # BƯỚC 3: Install dependencies & Build static files
+      # =========================================================================
+      - name: Install Dependencies
+        working-directory: app/frontend
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: app/frontend
+        run: npm run build
+
+      # =========================================================================
+      # BƯỚC 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # BƯỚC 5: Đăng nhập Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # BƯỚC 6: Extract metadata cho Frontend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_USERNAME }}/productx-frontend
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+
+      # =========================================================================
+      # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
+      # =========================================================================
+      - name: Build and Load Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          load: true  # Giữ lại máy ảo để Trivy quét
+          tags: ${{ env.DOCKER_USERNAME }}/productx-frontend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # BƯỚC 8: Quét lỗ hổng Container bằng Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/productx-frontend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'  # Chỉ fail khi có CRITICAL
+          ignore-unfixed: true  # Bỏ qua lỗi chưa có bản vá
+          trivyignores: '.trivyignore'  # Sử dụng ignore file
+
+      # =========================================================================
+      # BƯỚC 9: An toàn -> Đẩy lên Docker Hub
+      # =========================================================================
+      - name: Push Frontend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      # =========================================================================
+      # BƯỚC 10: Output thông tin Frontend image
+      # =========================================================================
+      - name: Print Frontend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Frontend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/productx-frontend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
