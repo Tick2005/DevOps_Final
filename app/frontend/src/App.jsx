@@ -283,7 +283,7 @@ export default function App() {
               <div className="detail-panel">
                 <div className="detail-item">
                   <span>Name</span>
-                  <strong>{activeProduct.name}</strong>
+                  <strong>{activeProduct.name || '-'}</strong>
                 </div>
                 <div className="detail-item">
                   <span>Price</span>
@@ -291,7 +291,7 @@ export default function App() {
                 </div>
                 <div className="detail-item">
                   <span>Color</span>
-                  <strong>{activeProduct.color}</strong>
+                  <strong>{activeProduct.color || '-'}</strong>
                 </div>
                 <div className="detail-item">
                   <span>Category</span>

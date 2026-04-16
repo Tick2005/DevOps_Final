@@ -30,6 +30,11 @@ public class ProductController {
     return service.listProducts(resolveHost(request));
   }
 
+  @GetMapping("/{id}")
+  public ProductResponse getById(@PathVariable Long id, HttpServletRequest request) {
+    return service.getProductById(id, resolveHost(request));
+  }
+
   @PostMapping
   @ResponseStatus(HttpStatus.CREATED)
   public ProductResponse create(@Valid @RequestBody ProductRequest request, HttpServletRequest httpRequest) {
@@ -37,13 +42,13 @@ public class ProductController {
   }
 
   @PutMapping("/{id}")
-  public ProductResponse update(@PathVariable String id, @Valid @RequestBody ProductRequest request, HttpServletRequest httpRequest) {
+  public ProductResponse update(@PathVariable Long id, @Valid @RequestBody ProductRequest request, HttpServletRequest httpRequest) {
     return service.updateProduct(id, request, resolveHost(httpRequest));
   }
 
   @DeleteMapping("/{id}")
   @ResponseStatus(HttpStatus.NO_CONTENT)
-  public void delete(@PathVariable String id) {
+  public void delete(@PathVariable Long id) {
     service.deleteProduct(id);
   }
 

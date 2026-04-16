@@ -1,24 +1,38 @@
-# Compiled class file
-*.class
+﻿# Terraform
+terraform/.terraform/
+terraform/.terraform.lock.hcl
+terraform/terraform.tfstate
+terraform/terraform.tfstate.backup
+terraform/*.tfplan
 
-# Log file
+# Ansible
+ansible/inventory/hosts.ini
+ansible/*.retry
+
+# Environment
+.env
+
+# SSH Keys
+*.pem
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 *.log
 
-# BlueJ files
-*.ctxt
+# Maven
+app/backend/common/target/
 
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
+# Node
+app/frontend/node_modules/
+app/frontend/dist/
 
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-replay_pid*
+# SonarCloud
+.scannerwork/

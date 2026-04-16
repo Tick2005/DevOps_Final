@@ -1,6 +1,9 @@
 package com.startupx.common.product;
 
-import org.springframework.data.mongodb.repository.MongoRepository;
+import java.util.List;
 
-public interface ProductRepository extends MongoRepository<ProductDocument, String> {
+import org.springframework.data.jpa.repository.JpaRepository;
+
+public interface ProductRepository extends JpaRepository<ProductDocument, Long> {
+	List<ProductDocument> findAllByOrderByIdAsc();
 }

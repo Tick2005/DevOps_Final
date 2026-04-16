@@ -1,30 +1,46 @@
 package com.startupx.common.product;
 
 import java.time.LocalDateTime;
-import org.springframework.data.annotation.CreatedDate;
-import org.springframework.data.annotation.Id;
-import org.springframework.data.mongodb.core.mapping.Document;
 
-@Document(collection = "products")
+import org.hibernate.annotations.CreationTimestamp;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "products")
 public class ProductDocument {
   @Id
-  private String id;
+  @GeneratedValue(strategy = GenerationType.IDENTITY)
+  private Long id;
+  
   private String name;
   private double price;
   private String color;
   private String category;
   private long stock;
+  
+  @Column(length = 1000)
   private String description;
+  
+  @Column(columnDefinition = "TEXT")
   private String image;
-  @CreatedDate
+  
+  @CreationTimestamp
+  @Column(name = "created_at", updatable = false)
   private LocalDateTime createdAt;
-  private String source = "MongoDB";
+  
+  private String source = "Unknown";
 
-  public String getId() {
+  public Long getId() {
     return id;
   }
 
-  public void setId(String id) {
+  public void setId(Long id) {
     this.id = id;
   }
 

@@ -1,11 +1,12 @@
 package com.startupx.common.product;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
 import java.time.LocalDateTime;
+
+import com.fasterxml.jackson.annotation.JsonInclude;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProductResponse {
-  private String id;
+  private Long id;
   private String name;
   private double price;
   private String color;
@@ -40,7 +41,13 @@ public class ProductResponse {
     return response;
   }
 
-  public String getId() {
+  public static ProductResponse from(ProductDocument document, String host, String tier, String source) {
+    ProductResponse response = from(document, host, tier);
+    response.source = source;
+    return response;
+  }
+
+  public Long getId() {
     return id;
   }
 
