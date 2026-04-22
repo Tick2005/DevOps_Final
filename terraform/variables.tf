@@ -70,7 +70,7 @@ variable "cluster_version" {
 variable "node_instance_type" {
   description = "Instance type cho EKS Worker Nodes"
   type        = string
-  default     = "t3.small"
+  default     = "c7i-flex.large"
 }
 
 variable "node_desired_size" {
