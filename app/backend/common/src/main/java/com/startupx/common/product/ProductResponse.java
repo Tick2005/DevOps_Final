@@ -1,8 +1,7 @@
 package com.startupx.common.product;
 
-import java.time.LocalDateTime;
-
 import com.fasterxml.jackson.annotation.JsonInclude;
+import java.time.LocalDateTime;
 
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public class ProductResponse {
@@ -38,12 +37,6 @@ public class ProductResponse {
     ProductResponse response = from(document);
     response.host = host;
     response.tier = tier;
-    return response;
-  }
-
-  public static ProductResponse from(ProductDocument document, String host, String tier, String source) {
-    ProductResponse response = from(document, host, tier);
-    response.source = source;
     return response;
   }
 

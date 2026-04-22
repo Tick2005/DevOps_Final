@@ -1,0 +1,10 @@
+# =============================================================================
+# NAMESPACE.YAML - Namespace for ProductX
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: productx
+  labels:
+    app.kubernetes.io/name: productx
+    environment: production

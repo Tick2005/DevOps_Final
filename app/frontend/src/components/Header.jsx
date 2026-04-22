@@ -6,10 +6,9 @@ function normalizeHost(host) {
 }
 
 export default function Header({ sourceInfo, loading }) {
-  const statusLabel = loading ? 'Connecting' : (sourceInfo?.status || 'Online')
+  const statusLabel = loading ? 'Connecting' : 'Online'
   const hostLabel = normalizeHost(sourceInfo?.host)
-  const sourceLabel = sourceInfo?.source ? String(sourceInfo.source) : '-'
-  const versionLabel = sourceInfo?.version || APP_VERSION
+  const sourceLabel = sourceInfo?.source ? String(sourceInfo.source).toLowerCase() : '-'
 
   return (
     <header className="header">
@@ -36,7 +35,7 @@ export default function Header({ sourceInfo, loading }) {
           <span className="meta-value">{sourceInfo?.tier || '-'}</span>
 
           <span className="meta-label">Version</span>
-          <span className="meta-value">{versionLabel}</span>
+          <span className="meta-value">{APP_VERSION}</span>
         </div>
       </div>
     </header>
