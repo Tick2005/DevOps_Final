@@ -33,9 +33,6 @@ public class ProductService {
   }
 
   public ProductResponse getProductById(Long id, String host) {
-    ProductDocument product = repository.findById(id)
-      .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
-    return ProductResponse.from(product, host, tier);
     String source = resolveRuntimeSource();
     ProductDocument product = repository.findById(id)
       .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Product not found"));
@@ -75,7 +72,6 @@ public class ProductService {
     target.setStock(stock == null ? 0L : stock);
     target.setDescription(trim(request.getDescription()));
     target.setImage(trim(request.getImage()));
-    target.setSource("PostgreSQL");
     target.setSource(source);
     return target;
   }
