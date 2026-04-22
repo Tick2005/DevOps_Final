@@ -1,8 +1,10 @@
 package com.startupx.common.product;
 
 import java.time.LocalDateTime;
+
 import jakarta.persistence.*;
 import org.hibernate.annotations.CreationTimestamp;
+
 
 @Entity
 @Table(name = "products")
@@ -20,6 +22,7 @@ public class ProductDocument {
   @Column(length = 1000)
   private String description;
   
+
   private String image;
   
   @CreationTimestamp
@@ -27,6 +30,7 @@ public class ProductDocument {
   private LocalDateTime createdAt;
   
   private String source = "PostgreSQL";
+  private String source = "Unknown";
 
   public Long getId() {
     return id;
