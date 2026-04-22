@@ -1,0 +1,69 @@
+# =============================================================================
+# NFS-SERVER.YML - Setup NFS Server for ProductX
+# =============================================================================
+# Chạy: ansible-playbook -i inventory/hosts.ini playbooks/nfs-server.yml
+# =============================================================================
+
+---
+- name: Setup NFS Server
+  hosts: nfs_server
+  become: yes
+  gather_facts: yes
+
+  vars:
+    nfs_export_path: /srv/nfs/uploads
+    nfs_export_options: "10.0.0.0/16(rw,sync,no_subtree_check,no_root_squash)"
+
+  tasks:
+    - name: Install NFS server packages
+      apt:
+        name:
+          - nfs-kernel-server
+          - nfs-common
+        state: present
+        update_cache: yes
+
+    - name: Create NFS export directory
+      file:
+        path: "{{ nfs_export_path }}"
+        state: directory
+        mode: '0777'
+        owner: nobody
+        group: nogroup
+
+    - name: Configure NFS exports
+      lineinfile:
+        path: /etc/exports
+        line: "{{ nfs_export_path }} {{ nfs_export_options }}"
+        state: present
+      notify: restart nfs
+
+    - name: Ensure NFS server is running
+      systemd:
+        name: nfs-kernel-server
+        state: started
+        enabled: yes
+
+    - name: Export NFS shares
+      command: exportfs -ra
+      changed_when: false
+
+    - name: Display NFS info
+      debug:
+        msg: |
+          ============================================
+          📁 NFS SERVER READY!
+          ============================================
+          Export Path: {{ nfs_export_path }}
+          Server IP: {{ ansible_default_ipv4.address }}
+          Mount Command: mount -t nfs {{ ansible_default_ipv4.address }}:{{ nfs_export_path }} /mnt
+          
+          Allowed Networks: 10.0.0.0/16
+          Options: rw, sync, no_subtree_check, no_root_squash
+          ============================================
+
+  handlers:
+    - name: restart nfs
+      systemd:
+        name: nfs-kernel-server
+        state: restarted
