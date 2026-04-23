@@ -12,8 +12,8 @@ function normalizeProduct(item) {
     id: resolveId(item),
     name: item.name || '',
     price: Number(item.price || 0),
-    color: item.color || '-',
-    category: item.category || '-',
+    color: item.color || '',
+    category: item.category || '',
     stock: Number(item.stock || 0),
     description: item.description || '',
     image: item.image || item.imageUrl || '',
@@ -84,7 +84,7 @@ export async function listProducts() {
 
   return {
     items,
-    source: 'API + MongoDB',
+    source: `API + ${sourceLabel}`,
     sourceInfo: {
       status: runtime?.status || 'Online',
       source: sourceLabel,
