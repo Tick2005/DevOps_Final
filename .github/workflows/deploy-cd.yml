@@ -1,136 +1,385 @@
 # =============================================================================
-# DEPLOY-CD.YML - CD Pipeline cho Production
+# DEPLOY-CD.YML - Continuous Deployment for ProductX
 # =============================================================================
-# Trigger: Workflow dispatch (manual) hoặc sau khi main-ci hoàn thành
-# Actions: Deploy to EKS Production
+# Trigger: Tự động chạy khi "Build & Release Docker" thành công
 # =============================================================================
 
-name: Deploy to Production
+name: Continuous Deployment (CD)
 
 on:
+  workflow_run:
+    workflows: ["Build & Release Docker"]
+    types:
+      - completed
+  
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Docker image tag to deploy (leave empty for latest)'
+        description: 'Docker image tag to deploy (default: latest)'
         required: false
-        type: string
-  workflow_run:
-    workflows: ["Main CI Pipeline"]
-    types:
-      - completed
-    branches: [main]
+        default: 'latest'
+      reason:
+        description: 'Reason for manual deployment'
+        required: false
+        default: 'Manual trigger'
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION || 'ap-southeast-1' }}
-  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
   DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
 
 jobs:
-  deploy-production:
-    name: Deploy to EKS Production
+  # ===========================================================================
+  # JOB: DEPLOY APPLICATION TO EKS
+  # ===========================================================================
+  deploy:
+    name: Deploy Application to EKS
     runs-on: ubuntu-latest
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    environment:
+      name: production
+      url: https://productx.online
 
-      - name: Configure AWS credentials
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+
+      - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Update kubeconfig
+      - name: Configure kubectl
         run: |
-          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.EKS_CLUSTER_NAME }}
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
 
-      - name: Download image tag artifact (if from CI)
-        if: github.event_name == 'workflow_run'
-        uses: actions/download-artifact@v4
-        with:
-          name: image-tag
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          run-id: ${{ github.event.workflow_run.id }}
-
-      - name: Set image tag
-        id: image_tag
+      - name: Update Deployment Images
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ -n "${{ inputs.image_tag }}" ]; then
-            echo "IMAGE_TAG=${{ inputs.image_tag }}" >> $GITHUB_OUTPUT
-          elif [ -f image-tag.txt ]; then
-            echo "IMAGE_TAG=$(cat image-tag.txt)" >> $GITHUB_OUTPUT
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger: use input tag
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            echo "🔧 Manual deployment triggered"
+            echo "📦 Using image tag: $IMAGE_TAG"
+            echo "📝 Reason: ${{ github.event.inputs.reason }}"
           else
-            echo "IMAGE_TAG=latest" >> $GITHUB_OUTPUT
+            # Automatic trigger: use commit SHA
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            echo "🤖 Automatic deployment triggered"
+            echo "📦 Deploying commit: $COMMIT_SHA"
+            echo "📦 Using image tag: $IMAGE_TAG"
           fi
+          
+          # Update backend deployment
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
+            kubernetes/base/backend/deployment.yaml
+          
+          # Update frontend deployment
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          
+          echo "✅ Image tags updated to: ${IMAGE_TAG}"
 
-      - name: Create namespace if not exists
+      - name: Deploy Application
         run: |
-          kubectl apply -f kubernetes/namespace.yaml
+          set -e
+          
+          echo "🚀 Deploying Application to EKS..."
+          
+          # Deploy backend
+          echo "📦 Deploying Backend..."
+          kubectl apply -f kubernetes/base/backend/deployment.yaml
+          kubectl apply -f kubernetes/base/backend/service.yaml
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+          
+          # Deploy frontend
+          echo "📦 Deploying Frontend..."
+          kubectl apply -f kubernetes/base/frontend/deployment.yaml
+          kubectl apply -f kubernetes/base/frontend/service.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+          
+          # Force rollout to pull new images
+          echo "🔄 Rolling out new images..."
+          kubectl rollout restart deployment/backend -n productx
+          kubectl rollout restart deployment/frontend -n productx
+          
+          # Wait for rollout to complete
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n productx --timeout=180s
+          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          
+          echo "✅ Application deployed successfully!"
 
-      - name: Update ConfigMap with DB and NFS IPs
+      - name: Verify Deployment
         run: |
-          sed -i "s/PLACEHOLDER_DB_HOST/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/configmap.yaml
-          sed -i "s/PLACEHOLDER_NFS_SERVER/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/configmap.yaml
-          kubectl apply -f kubernetes/configmap.yaml
-
-      - name: Update Secrets
-        run: |
-          sed -i "s/PLACEHOLDER_DB_PASSWORD/${{ secrets.DB_PASSWORD }}/g" kubernetes/secrets.yaml
-          kubectl apply -f kubernetes/secrets.yaml
-
-      - name: Update NFS PV
-        run: |
-          sed -i "s/PLACEHOLDER_NFS_SERVER/${{ secrets.DATA_SERVER_IP }}/g" kubernetes/nfs-pv.yaml
-          kubectl apply -f kubernetes/nfs-pv.yaml
-
-      - name: Update Backend Deployment
-        run: |
-          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" kubernetes/backend-deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|${{ steps.image_tag.outputs.IMAGE_TAG }}|g" kubernetes/backend-deployment.yaml
-          kubectl apply -f kubernetes/backend-deployment.yaml
-
-      - name: Update Frontend Deployment
-        run: |
-          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" kubernetes/frontend-deployment.yaml
-          sed -i "s|PLACEHOLDER_IMAGE_TAG|${{ steps.image_tag.outputs.IMAGE_TAG }}|g" kubernetes/frontend-deployment.yaml
-          kubectl apply -f kubernetes/frontend-deployment.yaml
-
-      - name: Apply HPA
-        run: kubectl apply -f kubernetes/hpa.yaml
-
-      - name: Apply Ingress
-        run: kubectl apply -f kubernetes/ingress.yaml
-
-      - name: Wait for deployments to be ready
-        run: |
-          kubectl rollout status deployment/backend -n productx --timeout=5m
-          kubectl rollout status deployment/frontend -n productx --timeout=5m
-
-      - name: Get deployment info
-        run: |
-          echo "=== Pods ==="
-          kubectl get pods -n productx
           echo ""
-          echo "=== Services ==="
+          echo "📊 Current Pod Status:"
+          kubectl get pods -n productx -o wide
+          echo ""
+          echo "📊 Current Services:"
           kubectl get svc -n productx
           echo ""
-          echo "=== Ingress ==="
+          echo "📊 Current Ingress:"
           kubectl get ingress -n productx
           echo ""
-          echo "=== HPA ==="
+          echo "📊 HPA Status:"
           kubectl get hpa -n productx
 
-      - name: Get ALB URL
-        id: alb_url
+      - name: Wait for Pods to be Ready
         run: |
-          ALB_URL=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
-          echo "ALB_URL=$ALB_URL" >> $GITHUB_OUTPUT
-          echo "Application URL: http://$ALB_URL"
+          echo "⏳ Waiting for all pods to be ready..."
+          
+          # Wait for backend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=backend \
+            -n productx \
+            --timeout=300s
+          
+          # Wait for frontend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=frontend \
+            -n productx \
+            --timeout=300s
+          
+          echo "✅ All pods are ready!"
 
-      - name: Deployment summary
+      - name: Health Check - Backend API
+        id: health_backend
         run: |
-          echo "✅ Deployment completed successfully!"
-          echo "Image Tag: ${{ steps.image_tag.outputs.IMAGE_TAG }}"
-          echo "Application URL: http://${{ steps.alb_url.outputs.ALB_URL }}"
+          echo "🏥 Checking Backend API health..."
+          
+          # Get backend service endpoint
+          BACKEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/api/actuator/health"
+          
+          # Retry logic for health check
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking $BACKEND_URL"
+            
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL" || echo "000")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Backend API is healthy (HTTP $HTTP_CODE)"
+              
+              # Get detailed health info
+              HEALTH_RESPONSE=$(curl -s "$BACKEND_URL")
+              echo "Health Response: $HEALTH_RESPONSE"
+              exit 0
+            else
+              echo "⚠️ Backend API returned HTTP $HTTP_CODE"
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "Waiting 15 seconds before retry..."
+                sleep 15
+              fi
+            fi
+          done
+          
+          echo "❌ Backend API health check failed after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Health Check - Frontend
+        id: health_frontend
+        run: |
+          echo "🏥 Checking Frontend health..."
+          
+          FRONTEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/"
+          
+          # Check if frontend is accessible
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" || echo "000")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Frontend is healthy (HTTP $HTTP_CODE)"
+          else
+            echo "❌ Frontend health check failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      - name: Smoke Tests - CRUD Operations
+        id: smoke_tests
+        run: |
+          echo "🧪 Running Smoke Tests..."
+          
+          API_BASE="https://www.${{ secrets.DOMAIN_NAME }}/api"
+          
+          # Test 1: List all products (GET /api/products)
+          echo "Test 1: GET /api/products"
+          PRODUCTS=$(curl -s "$API_BASE/products")
+          echo "Response: $PRODUCTS"
+          
+          if echo "$PRODUCTS" | grep -q "id"; then
+            echo "✅ Test 1 PASSED: Can list products"
+          else
+            echo "❌ Test 1 FAILED: Cannot list products"
+            exit 1
+          fi
+          
+          # Test 2: Get single product (GET /api/products/1)
+          echo ""
+          echo "Test 2: GET /api/products/1"
+          PRODUCT=$(curl -s "$API_BASE/products/1")
+          echo "Response: $PRODUCT"
+          
+          if echo "$PRODUCT" | grep -q "id"; then
+            echo "✅ Test 2 PASSED: Can get single product"
+          else
+            echo "❌ Test 2 FAILED: Cannot get single product"
+            exit 1
+          fi
+          
+          # Test 3: Create new product (POST /api/products)
+          echo ""
+          echo "Test 3: POST /api/products"
+          NEW_PRODUCT=$(curl -s -X POST "$API_BASE/products" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "Smoke Test Product",
+              "price": 99.99,
+              "color": "Blue",
+              "category": "Test",
+              "stock": 10,
+              "description": "Created by smoke test",
+              "image": "https://via.placeholder.com/150"
+            }')
+          
+          echo "Response: $NEW_PRODUCT"
+          
+          if echo "$NEW_PRODUCT" | grep -q "Smoke Test Product"; then
+            echo "✅ Test 3 PASSED: Can create product"
+            
+            # Extract product ID for cleanup
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            echo "Created product ID: $PRODUCT_ID"
+            
+            # Test 4: Update product (PUT /api/products/{id})
+            echo ""
+            echo "Test 4: PUT /api/products/$PRODUCT_ID"
+            UPDATED_PRODUCT=$(curl -s -X PUT "$API_BASE/products/$PRODUCT_ID" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "name": "Updated Smoke Test Product",
+                "price": 149.99,
+                "color": "Red",
+                "category": "Test",
+                "stock": 20,
+                "description": "Updated by smoke test",
+                "image": "https://via.placeholder.com/150"
+              }')
+            
+            echo "Response: $UPDATED_PRODUCT"
+            
+            if echo "$UPDATED_PRODUCT" | grep -q "Updated Smoke Test Product"; then
+              echo "✅ Test 4 PASSED: Can update product"
+            else
+              echo "❌ Test 4 FAILED: Cannot update product"
+              exit 1
+            fi
+            
+            # Test 5: Delete product (DELETE /api/products/{id})
+            echo ""
+            echo "Test 5: DELETE /api/products/$PRODUCT_ID"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API_BASE/products/$PRODUCT_ID")
+            
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "✅ Test 5 PASSED: Can delete product (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Test 5 FAILED: Cannot delete product (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+          else
+            echo "❌ Test 3 FAILED: Cannot create product"
+            exit 1
+          fi
+          
+          echo ""
+          echo "🎉 All smoke tests PASSED!"
+
+      - name: Rollback on Failure
+        if: failure() && (steps.health_backend.outcome == 'failure' || steps.health_frontend.outcome == 'failure' || steps.smoke_tests.outcome == 'failure')
+        run: |
+          echo "============================================="
+          echo "🔄 DEPLOYMENT FAILED - INITIATING ROLLBACK"
+          echo "============================================="
+          
+          # Rollback backend
+          echo "Rolling back backend deployment..."
+          kubectl rollout undo deployment/backend -n productx
+          kubectl rollout status deployment/backend -n productx --timeout=180s
+          
+          # Rollback frontend
+          echo "Rolling back frontend deployment..."
+          kubectl rollout undo deployment/frontend -n productx
+          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          
+          echo ""
+          echo "✅ Rollback completed!"
+          echo "📊 Current deployment status:"
+          kubectl get pods -n productx
+          
+          echo ""
+          echo "============================================="
+          echo "❌ DEPLOYMENT FAILED AND ROLLED BACK"
+          echo "============================================="
+          exit 1
+
+      - name: Print Deployment Summary
+        run: |
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            TRIGGER_TYPE="Manual"
+            TRIGGER_INFO="Reason: ${{ github.event.inputs.reason }}"
+          else
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            TRIGGER_TYPE="Automatic"
+            TRIGGER_INFO="Commit: $COMMIT_SHA"
+          fi
+          
+          echo "============================================="
+          echo "🎉 DEPLOYMENT COMPLETED!"
+          echo "============================================="
+          echo "Trigger: $TRIGGER_TYPE"
+          echo "$TRIGGER_INFO"
+          echo "Backend Image: ${{ env.DOCKER_USERNAME }}/productx-backend:${IMAGE_TAG}"
+          echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/productx-frontend:${IMAGE_TAG}"
+          echo "EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Namespace: productx"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB: NOTIFY ON CI FAILURE
+  # ===========================================================================
+  notify-ci-failed:
+    name: Notify CI Failed
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    
+    steps:
+      - name: CI Failed Notification
+        run: |
+          echo "============================================="
+          echo "❌ CI PIPELINE FAILED!"
+          echo "============================================="
+          echo "CD Pipeline skipped because CI failed."
+          echo "Please check the 'Build & Release Docker' workflow."
+          echo "Commit: ${{ github.event.workflow_run.head_sha }}"
+          echo "============================================="
