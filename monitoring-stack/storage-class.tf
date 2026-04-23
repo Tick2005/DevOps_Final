@@ -20,8 +20,4 @@ resource "kubernetes_storage_class_v1" "gp3" {
     encrypted = "true"
     fsType    = "ext4"
   }
-
-  lifecycle {
-    ignore_changes = all
-  }
 }
