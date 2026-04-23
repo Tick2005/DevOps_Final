@@ -18,6 +18,8 @@
    ```
    https://github.com/Huytran2k5/DevOps_Final/pull/new/feature/complete-cicd-pipeline
    ```
+   
+   **✅ LINK ĐÚNG - Repository: Huytran2k5/DevOps_Final**
 
 2. **Hoặc vào repository và click:**
    - Go to: https://github.com/Huytran2k5/DevOps_Final
