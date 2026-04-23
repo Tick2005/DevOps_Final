@@ -1,7 +1,7 @@
 import { FALLBACK_IMAGE } from '../api/client'
 
 function formatCurrency(value) {
-  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value)
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value || 0))
 }
 
 export default function ProductTable({ products, onView, onEdit, onDelete }) {
@@ -34,9 +34,9 @@ export default function ProductTable({ products, onView, onEdit, onDelete }) {
                   alt={item.name}
                 />
               </td>
-              <td>{item.name}</td>
+              <td>{item.name || '-'}</td>
               <td>{formatCurrency(item.price)}</td>
-              <td>{item.color}</td>
+              <td>{item.color || '-'}</td>
               <td>{item.category || '-'}</td>
               <td>{item.stock ?? 0}</td>
               <td>{item.description || '-'}</td>

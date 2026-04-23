@@ -18,4 +18,6 @@ spring:
 
 app:
   tier: ${APP_TIER:common}
+  exam-tier: ${APP_EXAM_TIER:}
+  version: ${APP_VERSION:v1.0.0}
 

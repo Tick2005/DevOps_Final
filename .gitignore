@@ -36,3 +36,12 @@ app/frontend/dist/
 
 # SonarCloud
 .scannerwork/
+
+# Generated documentation and temporary files
+ALL_FILES_CREATED.md
+CLEANUP_SUMMARY.md
+CREATE_PULL_REQUEST.md
+FILES_ANALYSIS.md
+PUSH_COMPLETE_SUMMARY.md
+TESTING_AND_SETUP_GUIDE.md
+bootstrap-backend.sh
