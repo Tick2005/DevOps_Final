@@ -134,10 +134,16 @@ jobs:
           sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" staging-deploy/backend/deployment.yaml
           sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/backend/deployment.yaml
           
+          # Update backend service for staging
+          sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/backend/service.yaml
+          
           # Update frontend deployment for staging
           sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" staging-deploy/frontend/deployment.yaml
           sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" staging-deploy/frontend/deployment.yaml
           sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/frontend/deployment.yaml
+          
+          # Update frontend service for staging
+          sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/frontend/service.yaml
           
           # Reduce replicas for staging (save resources)
           sed -i "s|replicas: 2|replicas: 1|g" staging-deploy/backend/deployment.yaml
@@ -156,22 +162,10 @@ jobs:
           kubectl apply -f staging-deploy/backend/deployment.yaml
           kubectl apply -f staging-deploy/backend/service.yaml
           
-          # Update service namespace
-          kubectl patch svc backend-svc -n ${{ env.STAGING_NAMESPACE }} \
-            -p '{"metadata":{"namespace":"'${{ env.STAGING_NAMESPACE }}'"}}' \
-            --dry-run=client -o yaml | kubectl apply -f - || \
-            kubectl apply -f staging-deploy/backend/service.yaml -n ${{ env.STAGING_NAMESPACE }}
-          
           # Deploy frontend
           echo "📦 Deploying Frontend..."
           kubectl apply -f staging-deploy/frontend/deployment.yaml
           kubectl apply -f staging-deploy/frontend/service.yaml
-          
-          # Update service namespace
-          kubectl patch svc frontend-svc -n ${{ env.STAGING_NAMESPACE }} \
-            -p '{"metadata":{"namespace":"'${{ env.STAGING_NAMESPACE }}'"}}' \
-            --dry-run=client -o yaml | kubectl apply -f - || \
-            kubectl apply -f staging-deploy/frontend/service.yaml -n ${{ env.STAGING_NAMESPACE }}
           
           # Wait for rollout
           echo "⏳ Waiting for rollout to complete..."
