@@ -21,7 +21,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: DOMAIN_NAME
+    - host: ${DOMAIN_NAME}
       http:
         paths:
           # Frontend - root path
