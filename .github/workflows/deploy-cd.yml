@@ -111,6 +111,10 @@ jobs:
           kubectl apply -f kubernetes/base/frontend/service.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
           
+          # Update ingress (in case health check path changed)
+          echo "🌐 Updating Ingress..."
+          kubectl apply -f kubernetes/ingress.yaml || echo "⚠️ Ingress update skipped (may need manual update)"
+          
           # Force rollout to pull new images
           echo "🔄 Rolling out new images..."
           kubectl rollout restart deployment/backend -n productx
@@ -155,6 +159,14 @@ jobs:
             --timeout=300s
           
           echo "✅ All pods are ready!"
+          
+          # Additional wait for application startup
+          echo "⏳ Waiting additional 30 seconds for application initialization..."
+          sleep 30
+          
+          # Check pod logs for startup confirmation
+          echo "📋 Checking backend pod logs..."
+          kubectl logs -l app=backend -n productx --tail=20 || true
 
       - name: Health Check - Backend API
         id: health_backend
@@ -165,33 +177,50 @@ jobs:
           BACKEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/api/actuator/health"
           
           # Retry logic for health check
-          MAX_RETRIES=10
+          MAX_RETRIES=15
           RETRY_COUNT=0
+          RETRY_DELAY=20
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking $BACKEND_URL"
             
-            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL" || echo "000")
+            # Use -L to follow redirects, -k to allow insecure (if needed), --max-time for timeout
+            HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$BACKEND_URL" || echo "000")
             
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✅ Backend API is healthy (HTTP $HTTP_CODE)"
               
               # Get detailed health info
-              HEALTH_RESPONSE=$(curl -s "$BACKEND_URL")
+              HEALTH_RESPONSE=$(curl -L -s "$BACKEND_URL")
               echo "Health Response: $HEALTH_RESPONSE"
               exit 0
             else
               echo "⚠️ Backend API returned HTTP $HTTP_CODE"
+              
+              # Check if it's a connection issue
+              if [ "$HTTP_CODE" = "000" ]; then
+                echo "🔍 Connection failed - checking pod status..."
+                kubectl get pods -l app=backend -n productx
+                echo "🔍 Checking service endpoints..."
+                kubectl get endpoints backend-svc -n productx
+                echo "🔍 Checking ingress status..."
+                kubectl get ingress app-ingress -n productx
+              fi
+              
               RETRY_COUNT=$((RETRY_COUNT + 1))
               
               if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                echo "Waiting 15 seconds before retry..."
-                sleep 15
+                echo "Waiting $RETRY_DELAY seconds before retry..."
+                sleep $RETRY_DELAY
               fi
             fi
           done
           
           echo "❌ Backend API health check failed after $MAX_RETRIES attempts"
+          echo "📋 Final pod status:"
+          kubectl get pods -l app=backend -n productx
+          echo "📋 Recent backend logs:"
+          kubectl logs -l app=backend -n productx --tail=50 || true
           exit 1
 
       - name: Health Check - Frontend
