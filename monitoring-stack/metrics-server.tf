@@ -38,4 +38,8 @@ resource "helm_release" "metrics_server" {
     name  = "resources.limits.memory"
     value = "400Mi"
   }
+
+  lifecycle {
+    ignore_changes = all
+  }
 }
