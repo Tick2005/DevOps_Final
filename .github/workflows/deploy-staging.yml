@@ -1,0 +1,339 @@
+# =============================================================================
+# DEPLOY-STAGING.YML - Staging Environment Deployment
+# =============================================================================
+# Trigger: Tự động chạy khi "Build & Release Docker" thành công
+# Purpose: Deploy to staging environment for testing before production
+# =============================================================================
+
+name: Deploy to Staging
+
+on:
+  workflow_run:
+    workflows: ["Build & Release Docker"]
+    types:
+      - completed
+  
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+      reason:
+        description: 'Reason for manual deployment'
+        required: false
+        default: 'Manual trigger'
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
+  STAGING_NAMESPACE: productx-staging
+
+jobs:
+  # ===========================================================================
+  # JOB: DEPLOY TO STAGING
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    environment:
+      name: staging
+      url: https://staging.tranduchuy.site
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      - name: Create Staging Namespace
+        run: |
+          echo "📦 Creating staging namespace..."
+          kubectl create namespace ${{ env.STAGING_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Staging namespace ready"
+
+      - name: Apply Staging ConfigMap
+        run: |
+          echo "⚙️ Applying staging configuration..."
+          
+          # Get DB and NFS IPs from production configmap
+          DB_HOST=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.DB_HOST}')
+          NFS_SERVER=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.NFS_SERVER}')
+          
+          # Create staging configmap
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: app-config
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          data:
+            DB_HOST: "$DB_HOST"
+            DB_PORT: "5432"
+            DB_NAME: "productx_staging"
+            NFS_SERVER: "$NFS_SERVER"
+            NFS_PATH: "/mnt/nfs_share/staging"
+            APP_ENV: "staging"
+          EOF
+          
+          echo "✅ Staging ConfigMap applied"
+
+      - name: Apply Staging Secrets
+        run: |
+          echo "🔐 Applying staging secrets..."
+          
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: app-secrets
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          type: Opaque
+          stringData:
+            DB_PASSWORD: "${{ secrets.DB_PASSWORD }}"
+          EOF
+          
+          echo "✅ Staging Secrets applied"
+
+      - name: Update Deployment Images
+        run: |
+          # Determine image tag based on trigger type
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            echo "🔧 Manual deployment triggered"
+            echo "📦 Using image tag: $IMAGE_TAG"
+          else
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+            SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+            IMAGE_TAG="sha-${SHORT_SHA}"
+            echo "🤖 Automatic deployment triggered"
+            echo "📦 Using image tag: $IMAGE_TAG"
+          fi
+          
+          # Copy deployment files for staging
+          cp -r kubernetes/base staging-deploy
+          
+          # Update backend deployment for staging
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" staging-deploy/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" staging-deploy/backend/deployment.yaml
+          sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/backend/deployment.yaml
+          
+          # Update frontend deployment for staging
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" staging-deploy/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" staging-deploy/frontend/deployment.yaml
+          sed -i "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" staging-deploy/frontend/deployment.yaml
+          
+          # Reduce replicas for staging (save resources)
+          sed -i "s|replicas: 2|replicas: 1|g" staging-deploy/backend/deployment.yaml
+          sed -i "s|replicas: 2|replicas: 1|g" staging-deploy/frontend/deployment.yaml
+          
+          echo "✅ Image tags updated to: ${IMAGE_TAG}"
+
+      - name: Deploy to Staging
+        run: |
+          set -e
+          
+          echo "🚀 Deploying to Staging Environment..."
+          
+          # Deploy backend
+          echo "📦 Deploying Backend..."
+          kubectl apply -f staging-deploy/backend/deployment.yaml
+          kubectl apply -f staging-deploy/backend/service.yaml
+          
+          # Update service namespace
+          kubectl patch svc backend-svc -n ${{ env.STAGING_NAMESPACE }} \
+            -p '{"metadata":{"namespace":"'${{ env.STAGING_NAMESPACE }}'"}}' \
+            --dry-run=client -o yaml | kubectl apply -f - || \
+            kubectl apply -f staging-deploy/backend/service.yaml -n ${{ env.STAGING_NAMESPACE }}
+          
+          # Deploy frontend
+          echo "📦 Deploying Frontend..."
+          kubectl apply -f staging-deploy/frontend/deployment.yaml
+          kubectl apply -f staging-deploy/frontend/service.yaml
+          
+          # Update service namespace
+          kubectl patch svc frontend-svc -n ${{ env.STAGING_NAMESPACE }} \
+            -p '{"metadata":{"namespace":"'${{ env.STAGING_NAMESPACE }}'"}}' \
+            --dry-run=client -o yaml | kubectl apply -f - || \
+            kubectl apply -f staging-deploy/frontend/service.yaml -n ${{ env.STAGING_NAMESPACE }}
+          
+          # Wait for rollout
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          
+          echo "✅ Staging deployment completed!"
+
+      - name: Wait for Pods to be Ready
+        run: |
+          echo "⏳ Waiting for staging pods to be ready..."
+          
+          kubectl wait --for=condition=ready pod \
+            -l app=backend \
+            -n ${{ env.STAGING_NAMESPACE }} \
+            --timeout=300s
+          
+          kubectl wait --for=condition=ready pod \
+            -l app=frontend \
+            -n ${{ env.STAGING_NAMESPACE }} \
+            --timeout=300s
+          
+          echo "✅ All staging pods are ready!"
+
+      - name: Run Staging Tests
+        id: staging_tests
+        run: |
+          echo "🧪 Running Staging Tests..."
+          
+          # Port forward backend service for testing
+          kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/backend-svc 8080:8080 &
+          PF_PID=$!
+          sleep 10
+          
+          # Test backend health
+          echo "Test 1: Backend Health Check"
+          HEALTH=$(curl -s http://localhost:8080/api/actuator/health || echo "FAILED")
+          
+          if echo "$HEALTH" | grep -q "UP"; then
+            echo "✅ Backend is healthy"
+          else
+            echo "❌ Backend health check failed"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Test CRUD operations
+          echo ""
+          echo "Test 2: List Products"
+          PRODUCTS=$(curl -s http://localhost:8080/api/products)
+          
+          if echo "$PRODUCTS" | grep -q "id"; then
+            echo "✅ Can list products"
+          else
+            echo "❌ Cannot list products"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Test create product
+          echo ""
+          echo "Test 3: Create Product"
+          NEW_PRODUCT=$(curl -s -X POST http://localhost:8080/api/products \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "Staging Test Product",
+              "price": 99.99,
+              "color": "Blue",
+              "category": "Test",
+              "stock": 10,
+              "description": "Staging test",
+              "image": "https://via.placeholder.com/150"
+            }')
+          
+          if echo "$NEW_PRODUCT" | grep -q "Staging Test Product"; then
+            echo "✅ Can create product"
+            
+            # Extract ID and cleanup
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            curl -s -X DELETE "http://localhost:8080/api/products/$PRODUCT_ID"
+            echo "✅ Cleanup completed"
+          else
+            echo "❌ Cannot create product"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+          
+          echo ""
+          echo "🎉 All staging tests PASSED!"
+
+      - name: Rollback Staging on Failure
+        if: failure() && steps.staging_tests.outcome == 'failure'
+        run: |
+          echo "🔄 Rolling back staging deployment..."
+          kubectl rollout undo deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout undo deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+          echo "✅ Staging rollback completed"
+
+      - name: Print Staging Summary
+        run: |
+          echo "============================================="
+          echo "🎉 STAGING DEPLOYMENT COMPLETED!"
+          echo "============================================="
+          echo "Namespace: ${{ env.STAGING_NAMESPACE }}"
+          echo ""
+          echo "📊 Pods:"
+          kubectl get pods -n ${{ env.STAGING_NAMESPACE }}
+          echo ""
+          echo "📊 Services:"
+          kubectl get svc -n ${{ env.STAGING_NAMESPACE }}
+          echo ""
+          echo "Access staging backend:"
+          echo "  kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/backend-svc 8080:8080"
+          echo "  http://localhost:8080"
+          echo ""
+          echo "Access staging frontend:"
+          echo "  kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/frontend-svc 3000:80"
+          echo "  http://localhost:3000"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB: PROMOTE TO PRODUCTION (Manual Approval Required)
+  # ===========================================================================
+  promote-to-production:
+    name: Promote to Production
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: success()
+    
+    environment:
+      name: production-approval
+      url: https://www.tranduchuy.site
+
+    steps:
+      - name: Promotion Approved
+        run: |
+          echo "============================================="
+          echo "✅ STAGING TESTS PASSED"
+          echo "============================================="
+          echo ""
+          echo "Staging deployment has been tested and approved."
+          echo "Ready to promote to production."
+          echo ""
+          echo "The production deployment workflow will be triggered automatically."
+          echo "============================================="
+      
+      - name: Trigger Production Deployment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy-cd.yml',
+              ref: context.ref,
+              inputs: {
+                image_tag: '${{ github.event.workflow_run.head_sha }}',
+                reason: 'Promoted from staging after successful tests'
+              }
+            });
+            
+            console.log('✅ Production deployment triggered!');

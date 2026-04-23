@@ -138,6 +138,206 @@ jobs:
           echo "📊 HPA Status:"
           kubectl get hpa -n productx
 
+      - name: Wait for Pods to be Ready
+        run: |
+          echo "⏳ Waiting for all pods to be ready..."
+          
+          # Wait for backend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=backend \
+            -n productx \
+            --timeout=300s
+          
+          # Wait for frontend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=frontend \
+            -n productx \
+            --timeout=300s
+          
+          echo "✅ All pods are ready!"
+
+      - name: Health Check - Backend API
+        id: health_backend
+        run: |
+          echo "🏥 Checking Backend API health..."
+          
+          # Get backend service endpoint
+          BACKEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/api/actuator/health"
+          
+          # Retry logic for health check
+          MAX_RETRIES=10
+          RETRY_COUNT=0
+          
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking $BACKEND_URL"
+            
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$BACKEND_URL" || echo "000")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ Backend API is healthy (HTTP $HTTP_CODE)"
+              
+              # Get detailed health info
+              HEALTH_RESPONSE=$(curl -s "$BACKEND_URL")
+              echo "Health Response: $HEALTH_RESPONSE"
+              exit 0
+            else
+              echo "⚠️ Backend API returned HTTP $HTTP_CODE"
+              RETRY_COUNT=$((RETRY_COUNT + 1))
+              
+              if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "Waiting 15 seconds before retry..."
+                sleep 15
+              fi
+            fi
+          done
+          
+          echo "❌ Backend API health check failed after $MAX_RETRIES attempts"
+          exit 1
+
+      - name: Health Check - Frontend
+        id: health_frontend
+        run: |
+          echo "🏥 Checking Frontend health..."
+          
+          FRONTEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/"
+          
+          # Check if frontend is accessible
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" || echo "000")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Frontend is healthy (HTTP $HTTP_CODE)"
+          else
+            echo "❌ Frontend health check failed (HTTP $HTTP_CODE)"
+            exit 1
+          fi
+
+      - name: Smoke Tests - CRUD Operations
+        id: smoke_tests
+        run: |
+          echo "🧪 Running Smoke Tests..."
+          
+          API_BASE="https://www.${{ secrets.DOMAIN_NAME }}/api"
+          
+          # Test 1: List all products (GET /api/products)
+          echo "Test 1: GET /api/products"
+          PRODUCTS=$(curl -s "$API_BASE/products")
+          echo "Response: $PRODUCTS"
+          
+          if echo "$PRODUCTS" | grep -q "id"; then
+            echo "✅ Test 1 PASSED: Can list products"
+          else
+            echo "❌ Test 1 FAILED: Cannot list products"
+            exit 1
+          fi
+          
+          # Test 2: Get single product (GET /api/products/1)
+          echo ""
+          echo "Test 2: GET /api/products/1"
+          PRODUCT=$(curl -s "$API_BASE/products/1")
+          echo "Response: $PRODUCT"
+          
+          if echo "$PRODUCT" | grep -q "id"; then
+            echo "✅ Test 2 PASSED: Can get single product"
+          else
+            echo "❌ Test 2 FAILED: Cannot get single product"
+            exit 1
+          fi
+          
+          # Test 3: Create new product (POST /api/products)
+          echo ""
+          echo "Test 3: POST /api/products"
+          NEW_PRODUCT=$(curl -s -X POST "$API_BASE/products" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "Smoke Test Product",
+              "price": 99.99,
+              "color": "Blue",
+              "category": "Test",
+              "stock": 10,
+              "description": "Created by smoke test",
+              "image": "https://via.placeholder.com/150"
+            }')
+          
+          echo "Response: $NEW_PRODUCT"
+          
+          if echo "$NEW_PRODUCT" | grep -q "Smoke Test Product"; then
+            echo "✅ Test 3 PASSED: Can create product"
+            
+            # Extract product ID for cleanup
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            echo "Created product ID: $PRODUCT_ID"
+            
+            # Test 4: Update product (PUT /api/products/{id})
+            echo ""
+            echo "Test 4: PUT /api/products/$PRODUCT_ID"
+            UPDATED_PRODUCT=$(curl -s -X PUT "$API_BASE/products/$PRODUCT_ID" \
+              -H "Content-Type: application/json" \
+              -d '{
+                "name": "Updated Smoke Test Product",
+                "price": 149.99,
+                "color": "Red",
+                "category": "Test",
+                "stock": 20,
+                "description": "Updated by smoke test",
+                "image": "https://via.placeholder.com/150"
+              }')
+            
+            echo "Response: $UPDATED_PRODUCT"
+            
+            if echo "$UPDATED_PRODUCT" | grep -q "Updated Smoke Test Product"; then
+              echo "✅ Test 4 PASSED: Can update product"
+            else
+              echo "❌ Test 4 FAILED: Cannot update product"
+              exit 1
+            fi
+            
+            # Test 5: Delete product (DELETE /api/products/{id})
+            echo ""
+            echo "Test 5: DELETE /api/products/$PRODUCT_ID"
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$API_BASE/products/$PRODUCT_ID")
+            
+            if [ "$HTTP_CODE" = "204" ]; then
+              echo "✅ Test 5 PASSED: Can delete product (HTTP $HTTP_CODE)"
+            else
+              echo "❌ Test 5 FAILED: Cannot delete product (HTTP $HTTP_CODE)"
+              exit 1
+            fi
+          else
+            echo "❌ Test 3 FAILED: Cannot create product"
+            exit 1
+          fi
+          
+          echo ""
+          echo "🎉 All smoke tests PASSED!"
+
+      - name: Rollback on Failure
+        if: failure() && (steps.health_backend.outcome == 'failure' || steps.health_frontend.outcome == 'failure' || steps.smoke_tests.outcome == 'failure')
+        run: |
+          echo "============================================="
+          echo "🔄 DEPLOYMENT FAILED - INITIATING ROLLBACK"
+          echo "============================================="
+          
+          # Rollback backend
+          echo "Rolling back backend deployment..."
+          kubectl rollout undo deployment/backend -n productx
+          kubectl rollout status deployment/backend -n productx --timeout=180s
+          
+          # Rollback frontend
+          echo "Rolling back frontend deployment..."
+          kubectl rollout undo deployment/frontend -n productx
+          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          
+          echo ""
+          echo "✅ Rollback completed!"
+          echo "📊 Current deployment status:"
+          kubectl get pods -n productx
+          
+          echo ""
+          echo "============================================="
+          echo "❌ DEPLOYMENT FAILED AND ROLLED BACK"
+          echo "============================================="
+          exit 1
+
       - name: Print Deployment Summary
         run: |
           # Determine image tag based on trigger type
