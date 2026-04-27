@@ -519,7 +519,7 @@ jobs:
             # Test 1: List all products
             echo 'Test 1: GET /api/products'
             PRODUCTS=\$(curl -s $API_BASE/products)
-            echo \"Response: \$PRODUCTS\"
+            echo \"Response (first 500 chars): \$(echo \"\$PRODUCTS\" | head -c 500)...\"
             
             if echo \"\$PRODUCTS\" | grep -q 'id'; then
               echo '✅ Test 1 PASSED: Can list products'
@@ -528,10 +528,19 @@ jobs:
               exit 1
             fi
             
-            # Test 2: Get single product
+            # Extract first product ID from the list
+            FIRST_PRODUCT_ID=\$(echo \"\$PRODUCTS\" | grep -o '\"id\":[0-9]*' | head -n1 | grep -o '[0-9]*')
+            echo \"First product ID found: \$FIRST_PRODUCT_ID\"
+            
+            if [ -z \"\$FIRST_PRODUCT_ID\" ]; then
+              echo '❌ Failed to extract product ID from list'
+              exit 1
+            fi
+            
+            # Test 2: Get single product (using ID from list)
             echo ''
-            echo 'Test 2: GET /api/products/1'
-            PRODUCT=\$(curl -s $API_BASE/products/1)
+            echo \"Test 2: GET /api/products/\$FIRST_PRODUCT_ID\"
+            PRODUCT=\$(curl -s $API_BASE/products/\$FIRST_PRODUCT_ID)
             echo \"Response: \$PRODUCT\"
             
             if echo \"\$PRODUCT\" | grep -q 'id'; then
