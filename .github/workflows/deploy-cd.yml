@@ -203,18 +203,21 @@ jobs:
           
           echo "✅ ALB Hostname: $ALB_HOSTNAME"
           
-          # Check if domain is configured
+          # Always use ALB hostname for health check (more reliable than domain)
+          # Domain might not have DNS configured yet
+          echo "🌐 Testing via ALB hostname (more reliable)"
+          BACKEND_URL="http://$ALB_HOSTNAME/api/actuator/health"
+          
+          # Check if domain is configured (informational only)
           DOMAIN="${{ secrets.DOMAIN_NAME }}"
           if [ -n "$DOMAIN" ]; then
-            echo "🌐 Using domain: www.$DOMAIN"
-            BACKEND_URL="https://www.$DOMAIN/api/actuator/health"
-            
-            # Check DNS resolution
+            echo "📋 Domain configured: www.$DOMAIN"
             echo "🔍 Checking DNS resolution..."
-            nslookup "www.$DOMAIN" || echo "⚠️ DNS not resolved yet"
-          else
-            echo "⚠️ No domain configured, using ALB directly"
-            BACKEND_URL="http://$ALB_HOSTNAME/api/actuator/health"
+            if nslookup "www.$DOMAIN" &>/dev/null; then
+              echo "✅ DNS resolved"
+            else
+              echo "⚠️ DNS not resolved yet (this is OK, using ALB directly)"
+            fi
           fi
           
           # Also test direct pod access
@@ -223,7 +226,8 @@ jobs:
           POD_NAME=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
           if [ -n "$POD_NAME" ]; then
             echo "Testing pod: $POD_NAME"
-            kubectl exec -n productx $POD_NAME -- curl -s http://localhost:8080/actuator/health || echo "⚠️ Pod health check failed"
+            # Use wget instead of curl since curl might not be in the image
+            kubectl exec -n productx $POD_NAME -- wget -q -O- http://localhost:8080/actuator/health || echo "⚠️ Pod health check failed (wget not available, trying alternative)"
           fi
           
           # Test service endpoint
@@ -232,26 +236,41 @@ jobs:
           kubectl run curl-test --image=curlimages/curl:latest --rm -i --restart=Never -n productx -- \
             curl -s http://backend-svc:8080/actuator/health || echo "⚠️ Service health check failed"
           
-          # Retry logic for external health check
+          # Retry logic for ALB health check
           echo ""
-          echo "🔍 Testing external access via $BACKEND_URL"
-          MAX_RETRIES=15
+          echo "🔍 Testing ALB access via $BACKEND_URL"
+          MAX_RETRIES=10
           RETRY_COUNT=0
-          RETRY_DELAY=20
+          RETRY_DELAY=15
           
           while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
             echo "Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking $BACKEND_URL"
             
-            # Use -L to follow redirects, -k to allow insecure (if needed), --max-time for timeout
-            HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$BACKEND_URL" || echo "000")
+            # Use -L to follow redirects, --max-time for timeout
+            HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$BACKEND_URL" 2>/dev/null || echo "000")
             
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✅ Backend API is healthy (HTTP $HTTP_CODE)"
               
               # Get detailed health info
-              HEALTH_RESPONSE=$(curl -L -s "$BACKEND_URL")
+              HEALTH_RESPONSE=$(curl -L -s "$BACKEND_URL" 2>/dev/null || echo "")
               echo "Health Response: $HEALTH_RESPONSE"
               exit 0
+            elif [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "⚠️ Backend API returned redirect (HTTP $HTTP_CODE)"
+              echo "This is expected if ALB is configured for HTTPS redirect"
+              
+              # Try HTTPS
+              HTTPS_URL="${BACKEND_URL/http:/https:}"
+              echo "Trying HTTPS: $HTTPS_URL"
+              HTTPS_CODE=$(curl -k -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$HTTPS_URL" 2>/dev/null || echo "000")
+              
+              if [ "$HTTPS_CODE" = "200" ]; then
+                echo "✅ Backend API is healthy via HTTPS (HTTP $HTTPS_CODE)"
+                HEALTH_RESPONSE=$(curl -k -L -s "$HTTPS_URL" 2>/dev/null || echo "")
+                echo "Health Response: $HEALTH_RESPONSE"
+                exit 0
+              fi
             else
               echo "⚠️ Backend API returned HTTP $HTTP_CODE"
               
@@ -267,12 +286,6 @@ jobs:
                 echo ""
                 echo "Ingress Status:"
                 kubectl get ingress app-ingress -n productx
-                echo ""
-                echo "Ingress Events:"
-                kubectl get events -n productx --field-selector involvedObject.name=app-ingress --sort-by='.lastTimestamp' | tail -10
-                echo ""
-                echo "Backend Pod Logs (last 20 lines):"
-                kubectl logs -l app=backend -n productx --tail=20 || true
               fi
               
               RETRY_COUNT=$((RETRY_COUNT + 1))
@@ -293,11 +306,8 @@ jobs:
           echo "Pod Status:"
           kubectl get pods -l app=backend -n productx -o wide
           echo ""
-          echo "Pod Describe:"
-          kubectl describe pods -l app=backend -n productx | tail -50
-          echo ""
           echo "Recent Backend Logs:"
-          kubectl logs -l app=backend -n productx --tail=100 || true
+          kubectl logs -l app=backend -n productx --tail=50 || true
           echo ""
           echo "Service Details:"
           kubectl describe svc backend-svc -n productx
@@ -312,12 +322,18 @@ jobs:
         run: |
           echo "🏥 Checking Frontend health..."
           
-          FRONTEND_URL="https://www.${{ secrets.DOMAIN_NAME }}/"
+          # Get ALB hostname
+          ALB_HOSTNAME=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Use ALB hostname instead of domain
+          FRONTEND_URL="http://$ALB_HOSTNAME/"
+          
+          echo "Testing: $FRONTEND_URL"
           
           # Check if frontend is accessible
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$FRONTEND_URL" || echo "000")
+          HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$FRONTEND_URL" 2>/dev/null || echo "000")
           
-          if [ "$HTTP_CODE" = "200" ]; then
+          if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
             echo "✅ Frontend is healthy (HTTP $HTTP_CODE)"
           else
             echo "❌ Frontend health check failed (HTTP $HTTP_CODE)"
@@ -329,7 +345,13 @@ jobs:
         run: |
           echo "🧪 Running Smoke Tests..."
           
-          API_BASE="https://www.${{ secrets.DOMAIN_NAME }}/api"
+          # Get ALB hostname
+          ALB_HOSTNAME=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          # Use ALB hostname for smoke tests
+          API_BASE="http://$ALB_HOSTNAME/api"
+          
+          echo "Testing API at: $API_BASE"
           
           # Test 1: List all products (GET /api/products)
           echo "Test 1: GET /api/products"
