@@ -21,7 +21,7 @@ metadata:
 spec:
   ingressClassName: alb
   rules:
-    - host: www.tranduchuy.site
+    - host: PLACEHOLDER_DOMAIN
       http:
         paths:
           # Frontend - root path
