@@ -120,6 +120,7 @@ jobs:
           tags: |
             type=sha,format=long
             type=sha,format=short
+            type=raw,value=latest
 
       # =========================================================================
       # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
@@ -236,6 +237,7 @@ jobs:
           tags: |
             type=sha,format=long
             type=sha,format=short
+            type=raw,value=latest
 
       # =========================================================================
       # BƯỚC 7: Build và Load vào Docker Local (CHƯA PUSH)
