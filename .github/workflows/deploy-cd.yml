@@ -264,8 +264,13 @@ jobs:
             echo "✅ Test 3 PASSED: Can create product"
             
             # Extract product ID for cleanup
-            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | jq -r '.id')
             echo "Created product ID: $PRODUCT_ID"
+            
+            if [ -z "$PRODUCT_ID" ] || [ "$PRODUCT_ID" = "null" ]; then
+              echo "❌ Failed to extract product ID"
+              exit 1
+            fi
             
             # Test 4: Update product (PUT /api/products/{id})
             echo ""

@@ -2,9 +2,28 @@
 
 Hệ thống quản lý sản phẩm với kiến trúc microservices triển khai trên Amazon EKS.
 
+## 🎉 Latest Updates
+
+**✅ All Critical Bugs Fixed (11/11)**
+- Security vulnerabilities patched
+- Performance optimizations applied
+- Comprehensive documentation added
+
+See [BUGS_FIXED_SUMMARY.md](./BUGS_FIXED_SUMMARY.md) for details.
+
+---
+
 ## 📚 Tài liệu hướng dẫn
 
-### 🎯 Bắt đầu nhanh
+### 🆕 New Documentation (Essential)
+1. **[BUGS_FIXED_SUMMARY.md](./BUGS_FIXED_SUMMARY.md)** - ⭐ Summary of all bug fixes
+2. **[GITHUB_SECRETS.md](./GITHUB_SECRETS.md)** - ⭐ Complete GitHub secrets configuration
+3. **[WORKFLOW_SEQUENCE.md](./WORKFLOW_SEQUENCE.md)** - ⭐ CI/CD workflow execution guide
+4. **[TESTING_GUIDE.md](./TESTING_GUIDE.md)** - ⭐ Comprehensive testing procedures
+5. **[MONITORING_GUIDE.md](./MONITORING_GUIDE.md)** - ⭐ Monitoring & observability guide
+6. **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - ⭐ Quick command reference
+
+### 🎯 Original Documentation
 1. **[GITHUB_SECRETS_GUIDE.md](./GITHUB_SECRETS_GUIDE.md)** - Hướng dẫn chi tiết cách tìm và thêm GitHub Secrets
 2. **[PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md)** - Hướng dẫn triển khai production từng bước
 3. **[FIX_IAM_PERMISSIONS.md](./FIX_IAM_PERMISSIONS.md)** - Fix lỗi IAM permissions và instance types
@@ -417,6 +436,22 @@ kubectl describe ingress app-ingress -n productx
 
 ## Testing
 
+### Quick Testing Commands
+
+```bash
+# Set your domain
+DOMAIN="www.tranduchuy.site"
+
+# Run complete E2E test suite
+./e2e-test.sh
+
+# Or test manually
+curl https://$DOMAIN/actuator/health
+curl https://$DOMAIN/api/products
+```
+
+**For comprehensive testing guide, see:** [TESTING_GUIDE.md](./TESTING_GUIDE.md)
+
 ### Test Horizontal Pod Autoscaling
 
 ```bash
@@ -439,6 +474,46 @@ kubectl delete pod <pod-name> -n productx
 # Kubernetes sẽ tự động tạo pod mới
 kubectl get pods -n productx -w
 ```
+
+---
+
+## Monitoring & Observability
+
+### Access Monitoring Tools
+
+```bash
+# Grafana (via port forward)
+kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
+# Open: http://localhost:3000
+# Default: admin / prom-operator
+
+# Get Grafana password
+kubectl get secret -n monitoring prometheus-grafana \
+  -o jsonpath="{.data.admin-password}" | base64 -d
+
+# Prometheus
+kubectl port-forward -n monitoring svc/prometheus-kube-prometheus-prometheus 9090:9090
+# Open: http://localhost:9090
+```
+
+### Key Metrics to Monitor
+
+```promql
+# CPU usage by pod
+sum(rate(container_cpu_usage_seconds_total{namespace="productx"}[5m])) by (pod)
+
+# Memory usage by pod
+sum(container_memory_working_set_bytes{namespace="productx"}) by (pod)
+
+# HTTP request rate
+rate(http_server_requests_seconds_count{namespace="productx"}[5m])
+
+# Error rate
+sum(rate(http_server_requests_seconds_count{namespace="productx",status=~"5.."}[5m])) / 
+sum(rate(http_server_requests_seconds_count{namespace="productx"}[5m])) * 100
+```
+
+**For complete monitoring guide, see:** [MONITORING_GUIDE.md](./MONITORING_GUIDE.md)
 
 ---
 
