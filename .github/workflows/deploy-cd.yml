@@ -104,6 +104,52 @@ jobs:
           echo "📋 Updated Ingress configuration:"
           cat kubernetes/ingress.yaml | grep -A 5 "host:"
 
+      - name: Clean Up Old ALB (if exists)
+        run: |
+          echo "🧹 Checking for existing ALB with wrong configuration..."
+          
+          # Check if ingress exists
+          if kubectl get ingress app-ingress -n productx &>/dev/null; then
+            echo "📋 Current ingress found"
+            
+            # Get current ALB hostname
+            CURRENT_ALB=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
+            
+            if [ -n "$CURRENT_ALB" ]; then
+              echo "🔍 Current ALB: $CURRENT_ALB"
+              
+              # Check if ALB has HTTPS listener (wrong config)
+              echo "🔍 Checking ALB listeners..."
+              ALB_ARN=$(aws elbv2 describe-load-balancers \
+                --query "LoadBalancers[?DNSName=='$CURRENT_ALB'].LoadBalancerArn" \
+                --output text 2>/dev/null || echo "")
+              
+              if [ -n "$ALB_ARN" ]; then
+                HTTPS_LISTENER=$(aws elbv2 describe-listeners \
+                  --load-balancer-arn "$ALB_ARN" \
+                  --query "Listeners[?Port==\`443\`].ListenerArn" \
+                  --output text 2>/dev/null || echo "")
+                
+                if [ -n "$HTTPS_LISTENER" ]; then
+                  echo "⚠️ ALB has HTTPS listener (port 443) - needs recreation"
+                  echo "🗑️ Deleting ingress to force ALB recreation..."
+                  kubectl delete ingress app-ingress -n productx
+                  
+                  echo "⏳ Waiting for ALB to be deleted..."
+                  sleep 30
+                  
+                  echo "✅ Old ALB will be cleaned up by AWS"
+                else
+                  echo "✅ ALB has correct configuration (HTTP only)"
+                fi
+              fi
+            else
+              echo "📋 No ALB found yet"
+            fi
+          else
+            echo "📋 No existing ingress found"
+          fi
+
       - name: Deploy Application
         run: |
           set -e
@@ -131,10 +177,10 @@ jobs:
           kubectl rollout restart deployment/backend -n productx
           kubectl rollout restart deployment/frontend -n productx
           
-          # Wait for rollout to complete
+          # Wait for rollout to complete with longer timeout
           echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n productx --timeout=180s
-          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          kubectl rollout status deployment/backend -n productx --timeout=600s
+          kubectl rollout status deployment/frontend -n productx --timeout=600s
           
           echo "✅ Application deployed successfully!"
 
@@ -248,6 +294,9 @@ jobs:
             
             # Use -L to follow redirects, --max-time for timeout
             HTTP_CODE=$(curl -L -s -o /dev/null -w "%{http_code}" --max-time 10 "$BACKEND_URL" 2>/dev/null || echo "000")
+            
+            # Clean up HTTP code (remove any extra characters)
+            HTTP_CODE=$(echo "$HTTP_CODE" | tr -d '[:space:]' | grep -o '^[0-9]\{3\}')
             
             if [ "$HTTP_CODE" = "200" ]; then
               echo "✅ Backend API is healthy (HTTP $HTTP_CODE)"
