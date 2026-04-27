@@ -505,10 +505,10 @@ jobs:
         id: smoke_tests
         run: |
           echo "🧪 Running Smoke Tests..."
-          echo "Testing via internal service (backend-svc:8080)"
+          echo "Testing via internal service (backend-svc:8080/api)"
           
-          # Use internal service endpoint for reliable testing
-          API_BASE="http://backend-svc:8080"
+          # Use internal service endpoint with /api prefix
+          API_BASE="http://backend-svc:8080/api"
           
           # Create a test pod to run curl commands
           echo "Creating test pod..."
@@ -517,7 +517,7 @@ jobs:
             echo ''
             
             # Test 1: List all products
-            echo 'Test 1: GET /products'
+            echo 'Test 1: GET /api/products'
             PRODUCTS=\$(curl -s $API_BASE/products)
             echo \"Response: \$PRODUCTS\"
             
@@ -530,7 +530,7 @@ jobs:
             
             # Test 2: Get single product
             echo ''
-            echo 'Test 2: GET /products/1'
+            echo 'Test 2: GET /api/products/1'
             PRODUCT=\$(curl -s $API_BASE/products/1)
             echo \"Response: \$PRODUCT\"
             
@@ -543,7 +543,7 @@ jobs:
             
             # Test 3: Create new product
             echo ''
-            echo 'Test 3: POST /products'
+            echo 'Test 3: POST /api/products'
             NEW_PRODUCT=\$(curl -s -X POST $API_BASE/products \
               -H 'Content-Type: application/json' \
               -d '{
@@ -572,7 +572,7 @@ jobs:
               
               # Test 4: Update product
               echo ''
-              echo \"Test 4: PUT /products/\$PRODUCT_ID\"
+              echo \"Test 4: PUT /api/products/\$PRODUCT_ID\"
               UPDATED_PRODUCT=\$(curl -s -X PUT $API_BASE/products/\$PRODUCT_ID \
                 -H 'Content-Type: application/json' \
                 -d '{
@@ -596,7 +596,7 @@ jobs:
               
               # Test 5: Delete product
               echo ''
-              echo \"Test 5: DELETE /products/\$PRODUCT_ID\"
+              echo \"Test 5: DELETE /api/products/\$PRODUCT_ID\"
               HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $API_BASE/products/\$PRODUCT_ID)
               
               if [ \"\$HTTP_CODE\" = '204' ]; then
