@@ -131,6 +131,7 @@ export default function App() {
     } catch (err) {
       setError(err.message || 'Failed to delete product')
       notify('Unable to delete product', 'error')
+      // Keep modal open on error so user can retry
     }
   }
 

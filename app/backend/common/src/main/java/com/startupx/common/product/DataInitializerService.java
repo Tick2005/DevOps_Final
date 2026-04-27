@@ -20,8 +20,7 @@ public class DataInitializerService implements CommandLineRunner {
   public void run(String... args) throws Exception {
     String runtimeSource = runtimeSourceResolver.resolve();
 
-    normalizeExistingSources(runtimeSource);
-
+    // Only seed if database is empty
     if (repository.count() > 0) {
       return;
     }
@@ -59,21 +58,5 @@ public class DataInitializerService implements CommandLineRunner {
     doc.setImage(image);
     doc.setSource(source);
     return doc;
-  }
-
-  private void normalizeExistingSources(String source) {
-    List<ProductDocument> products = repository.findAll();
-    boolean hasChanged = false;
-
-    for (ProductDocument product : products) {
-      if (!source.equals(product.getSource())) {
-        product.setSource(source);
-        hasChanged = true;
-      }
-    }
-
-    if (hasChanged) {
-      repository.saveAll(products);
-    }
   }
 }

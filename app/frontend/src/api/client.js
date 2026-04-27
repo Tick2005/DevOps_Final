@@ -3,7 +3,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 export const FALLBACK_IMAGE = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#dfe8fb"/><stop offset="100%" stop-color="#f3f7ff"/></linearGradient></defs><rect width="160" height="160" rx="80" fill="url(#g)"/><circle cx="80" cy="62" r="24" fill="#a9bde7"/><rect x="38" y="100" width="84" height="36" rx="18" fill="#bdd0f4"/></svg>')}`
 
 function resolveId(item) {
-  const rawId = item?.id ?? item?.productId ?? item?._id ?? null
+  const rawId = item?.id ?? null
   return rawId === null || rawId === undefined ? '' : String(rawId)
 }
 
