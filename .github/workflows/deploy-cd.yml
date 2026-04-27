@@ -104,6 +104,141 @@ jobs:
           echo "📋 Updated Ingress configuration:"
           cat kubernetes/ingress.yaml | grep -A 5 "host:"
 
+      - name: Get ACM Certificate ARN
+        id: get_cert_arn
+        run: |
+          echo "🔐 Getting ACM Certificate ARN from AWS..."
+          
+          # Get domain from secrets
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+          
+          if [ -z "$DOMAIN" ]; then
+            echo "⚠️ No domain configured, skipping HTTPS setup"
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "🔍 Looking for certificate for domain: $DOMAIN"
+          
+          # Find certificate ARN for the domain (including wildcard)
+          CERT_ARN=$(aws acm list-certificates \
+            --region ${{ env.AWS_REGION }} \
+            --query "CertificateSummaryList[?DomainName=='${DOMAIN}' || DomainName=='*.${DOMAIN}'].CertificateArn" \
+            --output text | head -n1)
+          
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No ACM certificate found for domain: $DOMAIN"
+            echo ""
+            echo "🔄 Attempting to create ACM certificate..."
+            
+            # Request certificate
+            CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN" \
+              --subject-alternative-names "*.$DOMAIN" \
+              --validation-method DNS \
+              --region ${{ env.AWS_REGION }} \
+              --query 'CertificateArn' \
+              --output text)
+            
+            if [ -z "$CERT_ARN" ]; then
+              echo "❌ Failed to create certificate"
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            echo "✅ Certificate requested: $CERT_ARN"
+            echo ""
+            echo "⚠️ IMPORTANT: Certificate validation required!"
+            echo "============================================="
+            echo "The certificate is now in PENDING_VALIDATION state."
+            echo ""
+            echo "To complete validation, you need to add DNS records:"
+            echo ""
+            
+            # Get validation records
+            sleep 5  # Wait for AWS to generate validation records
+            
+            aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+              --output table
+            
+            echo ""
+            echo "Steps to validate:"
+            echo "1. Go to your DNS provider (Route53, Cloudflare, etc.)"
+            echo "2. Add the CNAME records shown above"
+            echo "3. Wait for DNS propagation (5-30 minutes)"
+            echo "4. Certificate will automatically be validated"
+            echo ""
+            echo "🔄 For now, continuing with HTTP-only configuration..."
+            echo "   Re-run this workflow after DNS validation completes."
+            echo "============================================="
+            
+            # For now, don't use the certificate since it's not validated yet
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found certificate ARN: $CERT_ARN"
+            
+            # Check certificate status
+            CERT_STATUS=$(aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.Status' \
+              --output text)
+            
+            echo "📋 Certificate Status: $CERT_STATUS"
+            
+            if [ "$CERT_STATUS" = "PENDING_VALIDATION" ]; then
+              echo "⚠️ Certificate is pending DNS validation"
+              echo ""
+              echo "DNS validation records needed:"
+              aws acm describe-certificate \
+                --certificate-arn "$CERT_ARN" \
+                --region ${{ env.AWS_REGION }} \
+                --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+                --output table
+              echo ""
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "   Re-run this workflow after DNS validation completes."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            elif [ "$CERT_STATUS" != "ISSUED" ]; then
+              echo "⚠️ Certificate is not in ISSUED state (current: $CERT_STATUS)"
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Certificate is valid and ready to use"
+              echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Update Ingress with HTTPS Configuration
+        run: |
+          CERT_ARN="${{ steps.get_cert_arn.outputs.cert_arn }}"
+          
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No valid certificate found, configuring HTTP-only ALB..."
+            
+            # Remove HTTPS configuration from ingress
+            sed -i '/alb.ingress.kubernetes.io\/certificate-arn:/d' kubernetes/ingress.yaml
+            sed -i '/alb.ingress.kubernetes.io\/ssl-redirect:/d' kubernetes/ingress.yaml
+            sed -i 's/\[{"HTTP": 80}, {"HTTPS": 443}\]/[{"HTTP": 80}]/g' kubernetes/ingress.yaml
+            
+            echo "✅ Ingress configured for HTTP-only (port 80)"
+          else
+            echo "🔐 Configuring HTTPS with certificate..."
+            
+            # Update certificate ARN in ingress
+            sed -i "s|arn:aws:acm:REGION:ACCOUNT_ID:certificate/CERTIFICATE_ID|${CERT_ARN}|g" kubernetes/ingress.yaml
+            
+            echo "✅ Ingress configured for HTTPS (ports 80 and 443)"
+            echo "📋 Certificate ARN: $CERT_ARN"
+          fi
+          
+          echo ""
+          echo "📋 Final Ingress annotations:"
+          cat kubernetes/ingress.yaml | grep -A 15 "annotations:"
+
       - name: Clean Up Old ALB (if exists)
         run: |
           echo "🧹 Checking for existing ALB with wrong configuration..."
