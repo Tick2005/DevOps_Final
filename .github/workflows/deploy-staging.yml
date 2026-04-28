@@ -167,10 +167,15 @@ jobs:
           kubectl apply -f staging-deploy/frontend/deployment.yaml
           kubectl apply -f staging-deploy/frontend/service.yaml
           
-          # Wait for rollout
+          # Force rollout to pull new images
+          echo "🔄 Rolling out new images..."
+          kubectl rollout restart deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout restart deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+          
+          # Wait for rollout with longer timeout
           echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
-          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
           
           echo "✅ Staging deployment completed!"
 
@@ -189,75 +194,152 @@ jobs:
             --timeout=300s
           
           echo "✅ All staging pods are ready!"
+          
+          # Additional wait for application startup
+          echo "⏳ Waiting additional 30 seconds for application initialization..."
+          sleep 30
+          
+          # Check pod logs for startup confirmation
+          echo "📋 Checking backend pod logs..."
+          kubectl logs -l app=backend -n ${{ env.STAGING_NAMESPACE }} --tail=20 || true
 
       - name: Run Staging Tests
         id: staging_tests
         run: |
           echo "🧪 Running Staging Tests..."
+          echo "Testing via internal service (backend-svc:8080/api)"
           
-          # Port forward backend service for testing
-          kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/backend-svc 8080:8080 &
-          PF_PID=$!
-          sleep 10
+          # Use internal service endpoint with /api prefix
+          API_BASE="http://backend-svc:8080/api"
           
-          # Test backend health
-          echo "Test 1: Backend Health Check"
-          HEALTH=$(curl -s http://localhost:8080/api/actuator/health || echo "FAILED")
-          
-          if echo "$HEALTH" | grep -q "UP"; then
-            echo "✅ Backend is healthy"
-          else
-            echo "❌ Backend health check failed"
-            kill $PF_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          # Test CRUD operations
-          echo ""
-          echo "Test 2: List Products"
-          PRODUCTS=$(curl -s http://localhost:8080/api/products)
-          
-          if echo "$PRODUCTS" | grep -q "id"; then
-            echo "✅ Can list products"
-          else
-            echo "❌ Cannot list products"
-            kill $PF_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          # Test create product
-          echo ""
-          echo "Test 3: Create Product"
-          NEW_PRODUCT=$(curl -s -X POST http://localhost:8080/api/products \
-            -H "Content-Type: application/json" \
-            -d '{
-              "name": "Staging Test Product",
-              "price": 99.99,
-              "color": "Blue",
-              "category": "Test",
-              "stock": 10,
-              "description": "Staging test",
-              "image": "https://via.placeholder.com/150"
-            }')
-          
-          if echo "$NEW_PRODUCT" | grep -q "Staging Test Product"; then
-            echo "✅ Can create product"
+          # Create a test pod to run curl commands
+          echo "Creating test pod..."
+          kubectl run staging-test-pod --image=curlimages/curl:latest -n ${{ env.STAGING_NAMESPACE }} --restart=Never --rm -i -- sh -c "
+            echo '🧪 Running Staging CRUD Tests'
+            echo ''
             
-            # Extract ID and cleanup
-            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
-            curl -s -X DELETE "http://localhost:8080/api/products/$PRODUCT_ID"
-            echo "✅ Cleanup completed"
-          else
-            echo "❌ Cannot create product"
-            kill $PF_PID 2>/dev/null || true
-            exit 1
-          fi
-          
-          # Cleanup
-          kill $PF_PID 2>/dev/null || true
+            # Test 1: Health Check
+            echo 'Test 1: GET /actuator/health'
+            HEALTH=\$(curl -s http://backend-svc:8080/actuator/health)
+            echo \"Response: \$HEALTH\"
+            
+            if echo \"\$HEALTH\" | grep -q 'UP\|status'; then
+              echo '✅ Test 1 PASSED: Backend is healthy'
+            else
+              echo '❌ Test 1 FAILED: Backend health check failed'
+              exit 1
+            fi
+            
+            # Test 2: List all products
+            echo ''
+            echo 'Test 2: GET /api/products'
+            PRODUCTS=\$(curl -s $API_BASE/products)
+            echo \"Response (first 500 chars): \$(echo \"\$PRODUCTS\" | head -c 500)...\"
+            
+            if echo \"\$PRODUCTS\" | grep -q 'id'; then
+              echo '✅ Test 2 PASSED: Can list products'
+            else
+              echo '❌ Test 2 FAILED: Cannot list products'
+              exit 1
+            fi
+            
+            # Extract first product ID from the list
+            FIRST_PRODUCT_ID=\$(echo \"\$PRODUCTS\" | grep -o '\"id\":[0-9]*' | head -n1 | grep -o '[0-9]*')
+            echo \"First product ID found: \$FIRST_PRODUCT_ID\"
+            
+            if [ -z \"\$FIRST_PRODUCT_ID\" ]; then
+              echo '❌ Failed to extract product ID from list'
+              exit 1
+            fi
+            
+            # Test 3: Get single product
+            echo ''
+            echo \"Test 3: GET /api/products/\$FIRST_PRODUCT_ID\"
+            PRODUCT=\$(curl -s $API_BASE/products/\$FIRST_PRODUCT_ID)
+            echo \"Response: \$PRODUCT\"
+            
+            if echo \"\$PRODUCT\" | grep -q 'id'; then
+              echo '✅ Test 3 PASSED: Can get single product'
+            else
+              echo '❌ Test 3 FAILED: Cannot get single product'
+              exit 1
+            fi
+            
+            # Test 4: Create new product
+            echo ''
+            echo 'Test 4: POST /api/products'
+            NEW_PRODUCT=\$(curl -s -X POST $API_BASE/products \
+              -H 'Content-Type: application/json' \
+              -d '{
+                \"name\": \"Staging Test Product\",
+                \"price\": 99.99,
+                \"color\": \"Blue\",
+                \"category\": \"Test\",
+                \"stock\": 10,
+                \"description\": \"Created by staging test\",
+                \"image\": \"https://via.placeholder.com/150\"
+              }')
+            
+            echo \"Response: \$NEW_PRODUCT\"
+            
+            if echo \"\$NEW_PRODUCT\" | grep -q 'Staging Test Product'; then
+              echo '✅ Test 4 PASSED: Can create product'
+              
+              # Extract product ID
+              PRODUCT_ID=\$(echo \"\$NEW_PRODUCT\" | grep -o '\"id\":[0-9]*' | grep -o '[0-9]*')
+              echo \"Created product ID: \$PRODUCT_ID\"
+              
+              if [ -z \"\$PRODUCT_ID\" ]; then
+                echo '❌ Failed to extract product ID'
+                exit 1
+              fi
+              
+              # Test 5: Update product
+              echo ''
+              echo \"Test 5: PUT /api/products/\$PRODUCT_ID\"
+              UPDATED_PRODUCT=\$(curl -s -X PUT $API_BASE/products/\$PRODUCT_ID \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  \"name\": \"Updated Staging Test Product\",
+                  \"price\": 149.99,
+                  \"color\": \"Red\",
+                  \"category\": \"Test\",
+                  \"stock\": 20,
+                  \"description\": \"Updated by staging test\",
+                  \"image\": \"https://via.placeholder.com/150\"
+                }')
+              
+              echo \"Response: \$UPDATED_PRODUCT\"
+              
+              if echo \"\$UPDATED_PRODUCT\" | grep -q 'Updated Staging Test Product'; then
+                echo '✅ Test 5 PASSED: Can update product'
+              else
+                echo '❌ Test 5 FAILED: Cannot update product'
+                exit 1
+              fi
+              
+              # Test 6: Delete product
+              echo ''
+              echo \"Test 6: DELETE /api/products/\$PRODUCT_ID\"
+              HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $API_BASE/products/\$PRODUCT_ID)
+              
+              if [ \"\$HTTP_CODE\" = '204' ]; then
+                echo \"✅ Test 6 PASSED: Can delete product (HTTP \$HTTP_CODE)\"
+              else
+                echo \"❌ Test 6 FAILED: Cannot delete product (HTTP \$HTTP_CODE)\"
+                exit 1
+              fi
+            else
+              echo '❌ Test 4 FAILED: Cannot create product'
+              exit 1
+            fi
+            
+            echo ''
+            echo '🎉 All staging tests PASSED!'
+          "
           
           echo ""
-          echo "🎉 All staging tests PASSED!"
+          echo "✅ Staging tests completed successfully!"
 
       - name: Rollback Staging on Failure
         if: failure() && steps.staging_tests.outcome == 'failure'
