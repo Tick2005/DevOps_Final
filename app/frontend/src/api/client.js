@@ -35,7 +35,7 @@ function toPayload(payload) {
     ? 0.01
     : Number(payload.price)
   
-  return {
+  const result = {
     name: payload.name.trim(),
     color: payload.color.trim(),
     description: (payload.description || '').trim(),
@@ -44,6 +44,12 @@ function toPayload(payload) {
     stock: stock < 0 ? 0 : stock,  // Ensure non-negative
     price: price <= 0 ? 0.01 : price  // Ensure positive
   }
+  
+  // Debug logging
+  console.log('toPayload input:', payload)
+  console.log('toPayload output:', result)
+  
+  return result
 }
 
 function assertValidId(id) {
@@ -61,15 +67,36 @@ async function request(path, options) {
       headers: { 'Content-Type': 'application/json' },
       ...options
     })
-  } catch {
+  } catch (error) {
+    console.error('Fetch error:', error)
     throw new Error('Backend is starting. Please wait a moment and press Refresh.')
   }
 
   if (!response.ok) {
+    // Try to get error details from response
+    let errorMessage = `Request failed (${response.status})`
+    try {
+      const errorData = await response.json()
+      console.error('Backend error response:', errorData)
+      if (errorData.message) {
+        errorMessage = errorData.message
+      } else if (errorData.errors) {
+        errorMessage = Object.values(errorData.errors).join(', ')
+      }
+    } catch {
+      // If response is not JSON, try to get text
+      try {
+        const errorText = await response.text()
+        console.error('Backend error text:', errorText)
+      } catch {
+        // Ignore
+      }
+    }
+    
     if ([502, 503, 504].includes(response.status)) {
       throw new Error('Backend is warming up. Please wait a few seconds and try again.')
     }
-    throw new Error(`Request failed (${response.status}). Please try again.`)
+    throw new Error(errorMessage)
   }
 
   if (response.status === 204) {
