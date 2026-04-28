@@ -62,8 +62,56 @@ jobs:
           kubectl version --client
           kubectl cluster-info
 
-      - name: Generate Image Tag
-        id: tag
+      - name: Create Staging Namespace
+        run: |
+          echo "📦 Creating staging namespace..."
+          kubectl create namespace ${{ env.STAGING_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Staging namespace ready"
+
+      - name: Apply Staging ConfigMap
+        run: |
+          echo "⚙️ Applying staging configuration..."
+          
+          # Get DB and NFS IPs from production configmap
+          DB_HOST=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.DB_HOST}')
+          NFS_SERVER=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.NFS_SERVER}')
+          
+          # Create staging configmap
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: app-config
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          data:
+            DB_HOST: "$DB_HOST"
+            DB_PORT: "5432"
+            DB_NAME: "productx_staging"
+            NFS_SERVER: "$NFS_SERVER"
+            NFS_PATH: "/mnt/nfs_share/staging"
+            APP_ENV: "staging"
+          EOF
+          
+          echo "✅ Staging ConfigMap applied"
+
+      - name: Apply Staging Secrets
+        run: |
+          echo "🔐 Applying staging secrets..."
+          
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: app-secrets
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          type: Opaque
+          stringData:
+            DB_PASSWORD: "${{ secrets.DB_PASSWORD }}"
+          EOF
+          
+          echo "✅ Staging Secrets applied"
+
+      - name: Update Deployment Images
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             IMAGE_TAG="${{ github.event.inputs.image_tag }}"
@@ -99,6 +147,20 @@ jobs:
           
           echo "✅ Image tags updated to: ${IMAGE_TAG}"
 
+      - name: Verify Staging Configuration
+        run: |
+          echo "🔍 Verifying staging configuration..."
+          
+          echo "📋 ConfigMap:"
+          kubectl get configmap app-config -n ${{ env.STAGING_NAMESPACE }} -o yaml
+          
+          echo ""
+          echo "📋 Secrets (names only):"
+          kubectl get secret app-secrets -n ${{ env.STAGING_NAMESPACE }}
+          
+          echo ""
+          echo "✅ Configuration verified"
+
       - name: Deploy to Staging
         run: |
           set -e
@@ -113,19 +175,99 @@ jobs:
           echo "📦 Deploying Frontend..."
           kubectl apply -f /tmp/frontend-deployment.yaml
           
-          echo "✅ Staging deployment manifests applied!"
+          # Wait for rollout
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          
+          echo "✅ Staging deployment completed!"
 
-      - name: Wait for Deployment
+      - name: Wait for Pods to be Ready
         run: |
           echo "⏳ Waiting for deployments to be ready..."
           kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
           kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
           
-          echo "✅ All deployments completed successfully!"
+          echo "✅ All staging pods are ready!"
 
       - name: Verify Staging Deployment
         run: |
+          echo "🧪 Running Staging Tests..."
+          
+          # Port forward backend service for testing
+          kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/backend-svc 8080:8080 &
+          PF_PID=$!
+          sleep 10
+          
+          # Test backend health
+          echo "Test 1: Backend Health Check"
+          HEALTH=$(curl -s http://localhost:8080/api/actuator/health || echo "FAILED")
+          
+          if echo "$HEALTH" | grep -q "UP"; then
+            echo "✅ Backend is healthy"
+          else
+            echo "❌ Backend health check failed"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Test CRUD operations
           echo ""
+          echo "Test 2: List Products"
+          PRODUCTS=$(curl -s http://localhost:8080/api/products)
+          
+          if echo "$PRODUCTS" | grep -q "id"; then
+            echo "✅ Can list products"
+          else
+            echo "❌ Cannot list products"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Test create product
+          echo ""
+          echo "Test 3: Create Product"
+          NEW_PRODUCT=$(curl -s -X POST http://localhost:8080/api/products \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "Staging Test Product",
+              "price": 99.99,
+              "color": "Blue",
+              "category": "Test",
+              "stock": 10,
+              "description": "Staging test",
+              "image": "https://via.placeholder.com/150"
+            }')
+          
+          if echo "$NEW_PRODUCT" | grep -q "Staging Test Product"; then
+            echo "✅ Can create product"
+            
+            # Extract ID and cleanup
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            curl -s -X DELETE "http://localhost:8080/api/products/$PRODUCT_ID"
+            echo "✅ Cleanup completed"
+          else
+            echo "❌ Cannot create product"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+          
+          echo ""
+          echo "🎉 All staging tests PASSED!"
+
+      - name: Rollback Staging on Failure
+        if: failure() && steps.staging_tests.outcome == 'failure'
+        run: |
+          echo "🔄 Rolling back staging deployment..."
+          kubectl rollout undo deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout undo deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+          echo "✅ Staging rollback completed"
+
+      - name: Print Staging Summary
+        run: |
           echo "============================================="
           echo "📊 STAGING DEPLOYMENT STATUS"
           echo "============================================="
