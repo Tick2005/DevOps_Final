@@ -199,7 +199,7 @@ jobs:
     
     environment:
       name: production-infrastructure
-      url: https://productx.online
+      url: https://www.tranduchuy.site
     
     outputs:
       db_public_ip: ${{ steps.outputs.outputs.db_public_ip }}
@@ -657,17 +657,23 @@ jobs:
           fi
           
           echo ""
-          echo "Access URLs (after port-forward):"
-          echo "  Prometheus:   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
-          echo "                http://localhost:9090"
-          echo ""
-          echo "  Grafana:      kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
-          echo "                http://localhost:3000"
-          echo "                Username: admin"
-          echo "                Password: (from secret GRAFANA_ADMIN_PASSWORD)"
-          echo ""
-          echo "  Alertmanager: kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093"
-          echo "                http://localhost:9093"
+          echo "Access URLs:"
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "  Grafana:      https://monitoring.${{ secrets.DOMAIN_NAME }}"
+            echo "                Username: admin"
+            echo "                Password: (from secret GRAFANA_ADMIN_PASSWORD)"
+          else
+            echo "  Prometheus:   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+            echo "                http://localhost:9090"
+            echo ""
+            echo "  Grafana:      kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+            echo "                http://localhost:3000"
+            echo "                Username: admin"
+            echo "                Password: (from secret GRAFANA_ADMIN_PASSWORD)"
+            echo ""
+            echo "  Alertmanager: kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093"
+            echo "                http://localhost:9093"
+          fi
           echo ""
           echo "============================================="
       
@@ -752,6 +758,26 @@ jobs:
             kubectl describe ingress app-ingress -n productx | grep Host
           else
             echo "⚠️ No domain configured, skipping host patch"
+          fi
+      
+      - name: Apply Grafana Ingress
+        run: |
+          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Grafana Ingress with HTTPS"
+            cat kubernetes/monitoring/grafana-ingress.yaml | \
+              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Grafana Ingress (HTTP-only mode)"
+            cat kubernetes/monitoring/grafana-ingress.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
           fi
       
       - name: Verify Resources
