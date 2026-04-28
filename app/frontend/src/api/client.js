@@ -45,9 +45,16 @@ function toPayload(payload) {
     price: price <= 0 ? 0.01 : price  // Ensure positive
   }
   
-  // Debug logging
-  console.log('toPayload input:', payload)
-  console.log('toPayload output:', result)
+  // Debug logging - log each field separately
+  console.log('=== toPayload Debug ===')
+  console.log('Input price:', payload.price, 'type:', typeof payload.price)
+  console.log('Input stock:', payload.stock, 'type:', typeof payload.stock)
+  console.log('Parsed price:', price, 'type:', typeof price)
+  console.log('Parsed stock:', stock, 'type:', typeof stock)
+  console.log('Result price:', result.price, 'type:', typeof result.price)
+  console.log('Result stock:', result.stock, 'type:', typeof result.stock)
+  console.log('Full result:', JSON.stringify(result, null, 2))
+  console.log('======================')
   
   return result
 }
