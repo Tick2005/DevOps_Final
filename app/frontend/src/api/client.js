@@ -25,14 +25,24 @@ function normalizeProduct(item) {
 }
 
 function toPayload(payload) {
+  // Parse and validate stock - must be integer
+  const stock = payload.stock === '' || payload.stock === null || payload.stock === undefined 
+    ? 0 
+    : Math.floor(Number(payload.stock))
+  
+  // Parse and validate price - must be positive number
+  const price = payload.price === '' || payload.price === null || payload.price === undefined
+    ? 0.01
+    : Number(payload.price)
+  
   return {
     name: payload.name.trim(),
     color: payload.color.trim(),
-    description: payload.description.trim(),
+    description: (payload.description || '').trim(),
     category: (payload.category || '').trim(),
     image: payload.image || '',
-    stock: Number(payload.stock || 0),
-    price: Number(payload.price)
+    stock: stock < 0 ? 0 : stock,  // Ensure non-negative
+    price: price <= 0 ? 0.01 : price  // Ensure positive
   }
 }
 
