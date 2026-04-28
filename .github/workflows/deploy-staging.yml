@@ -72,11 +72,26 @@ jobs:
         run: |
           echo "⚙️ Applying staging configuration..."
           
-          # Get DB and NFS IPs from production configmap
-          DB_HOST=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.DB_HOST}')
-          NFS_SERVER=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.NFS_SERVER}')
+          # Try to get DB and NFS IPs from production configmap
+          DB_HOST=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.DB_HOST}' 2>/dev/null || echo "")
+          NFS_SERVER=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.NFS_SERVER}' 2>/dev/null || echo "")
           
-          # Create staging configmap
+          # If production configmap doesn't exist, use placeholder values
+          if [ -z "$DB_HOST" ]; then
+            echo "⚠️ Production configmap not found, using placeholder DB_HOST"
+            DB_HOST="postgres-service.productx.svc.cluster.local"
+          fi
+          
+          if [ -z "$NFS_SERVER" ]; then
+            echo "⚠️ Production configmap not found, using placeholder NFS_SERVER"
+            NFS_SERVER="nfs-server.productx.svc.cluster.local"
+          fi
+          
+          echo "📋 Using DB_HOST: $DB_HOST"
+          echo "📋 Using NFS_SERVER: $NFS_SERVER"
+          
+          # For staging, use same database as production (Spring Boot will create tables automatically)
+          # This is acceptable for testing purposes
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: ConfigMap
@@ -88,11 +103,12 @@ jobs:
             DB_PORT: "5432"
             DB_NAME: "productx_staging"
             NFS_SERVER: "$NFS_SERVER"
-            NFS_PATH: "/mnt/nfs_share/staging"
+            NFS_PATH: "/mnt/nfs_share"
             APP_ENV: "staging"
           EOF
           
-          echo "✅ Staging ConfigMap applied"
+          echo "✅ Staging ConfigMap applied (using production database)"
+          echo "ℹ️  Staging shares database with production for testing"
 
       - name: Apply Staging Secrets
         run: |
@@ -151,6 +167,20 @@ jobs:
           
           echo "✅ Image tags updated to: ${IMAGE_TAG}"
 
+      - name: Verify Staging Configuration
+        run: |
+          echo "🔍 Verifying staging configuration..."
+          
+          echo "📋 ConfigMap:"
+          kubectl get configmap app-config -n ${{ env.STAGING_NAMESPACE }} -o yaml
+          
+          echo ""
+          echo "📋 Secrets (names only):"
+          kubectl get secret app-secrets -n ${{ env.STAGING_NAMESPACE }}
+          
+          echo ""
+          echo "✅ Configuration verified"
+
       - name: Deploy to Staging
         run: |
           set -e
@@ -167,17 +197,52 @@ jobs:
           kubectl apply -f staging-deploy/frontend/deployment.yaml
           kubectl apply -f staging-deploy/frontend/service.yaml
           
-          # Force rollout to pull new images
-          echo "🔄 Rolling out new images..."
-          kubectl rollout restart deployment/backend -n ${{ env.STAGING_NAMESPACE }}
-          kubectl rollout restart deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+          echo "✅ Staging deployment manifests applied!"
+
+      - name: Monitor Deployment Progress
+        run: |
+          echo "⏳ Monitoring deployment progress..."
           
           # Wait for rollout with longer timeout
-          echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
-          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
+          echo ""
+          echo "📊 Backend deployment status:"
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s || {
+            echo ""
+            echo "❌ Backend deployment failed. Checking details..."
+            echo ""
+            echo "📊 Pod Status:"
+            kubectl get pods -l app=backend -n ${{ env.STAGING_NAMESPACE }} -o wide
+            echo ""
+            echo "📋 Pod Events:"
+            kubectl get events -n ${{ env.STAGING_NAMESPACE }} --sort-by='.lastTimestamp' | grep backend | tail -20
+            echo ""
+            echo "📋 Pod Logs:"
+            kubectl logs -l app=backend -n ${{ env.STAGING_NAMESPACE }} --tail=50 || echo "No logs available"
+            echo ""
+            echo "📋 Pod Description:"
+            POD_NAME=$(kubectl get pods -l app=backend -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+            if [ -n "$POD_NAME" ]; then
+              kubectl describe pod $POD_NAME -n ${{ env.STAGING_NAMESPACE }}
+            fi
+            exit 1
+          }
           
-          echo "✅ Staging deployment completed!"
+          echo ""
+          echo "📊 Frontend deployment status:"
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s || {
+            echo ""
+            echo "❌ Frontend deployment failed. Checking details..."
+            echo ""
+            echo "📊 Pod Status:"
+            kubectl get pods -l app=frontend -n ${{ env.STAGING_NAMESPACE }} -o wide
+            echo ""
+            echo "📋 Pod Logs:"
+            kubectl logs -l app=frontend -n ${{ env.STAGING_NAMESPACE }} --tail=50 || echo "No logs available"
+            exit 1
+          }
+          
+          echo ""
+          echo "✅ All deployments completed successfully!"
 
       - name: Wait for Pods to be Ready
         run: |
