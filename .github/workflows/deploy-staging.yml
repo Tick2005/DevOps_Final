@@ -90,8 +90,7 @@ jobs:
           echo "📋 Using DB_HOST: $DB_HOST"
           echo "📋 Using NFS_SERVER: $NFS_SERVER"
           
-          # For staging, use same database as production (Spring Boot will create tables automatically)
-          # This is acceptable for testing purposes
+          # For staging, use separate database to isolate test data
           cat <<EOF | kubectl apply -f -
           apiVersion: v1
           kind: ConfigMap
@@ -103,12 +102,12 @@ jobs:
             DB_PORT: "5432"
             DB_NAME: "productx_staging"
             NFS_SERVER: "$NFS_SERVER"
-            NFS_PATH: "/mnt/nfs_share"
+            NFS_PATH: "/mnt/nfs_share/staging"
             APP_ENV: "staging"
           EOF
           
-          echo "✅ Staging ConfigMap applied (using production database)"
-          echo "ℹ️  Staging shares database with production for testing"
+          echo "✅ Staging ConfigMap applied (using separate staging database)"
+          echo "ℹ️  Staging uses productx_staging database for data isolation"
 
       - name: Apply Staging Secrets
         run: |
@@ -126,6 +125,88 @@ jobs:
           EOF
           
           echo "✅ Staging Secrets applied"
+
+      - name: Create Staging Database
+        run: |
+          echo "🗄️ Creating staging database if not exists..."
+          
+          # Get DB configuration
+          DB_HOST=$(kubectl get configmap app-config -n ${{ env.STAGING_NAMESPACE }} -o jsonpath='{.data.DB_HOST}')
+          DB_PASSWORD="${{ secrets.DB_PASSWORD }}"
+          
+          echo "📋 Database Host: $DB_HOST"
+          echo "📋 Target Database: productx_staging"
+          
+          # Create a temporary pod to create the database
+          echo "🔧 Creating temporary database initialization pod..."
+          
+          kubectl run db-init-staging-${{ github.run_id }} \
+            --image=postgres:15-alpine \
+            --restart=Never \
+            --rm -i \
+            -n ${{ env.STAGING_NAMESPACE }} \
+            --env="PGPASSWORD=$DB_PASSWORD" \
+            --command -- sh -c "
+              echo '🔍 Connecting to PostgreSQL server...'
+              
+              # Test connection to main database
+              if psql -h $DB_HOST -U productx_user -d productx -c 'SELECT 1' > /dev/null 2>&1; then
+                echo '✅ Successfully connected to PostgreSQL server'
+                
+                # Check if staging database exists
+                DB_EXISTS=\$(psql -h $DB_HOST -U productx_user -d productx -tAc \"SELECT 1 FROM pg_database WHERE datname='productx_staging'\")
+                
+                if [ \"\$DB_EXISTS\" = '1' ]; then
+                  echo '✅ Database productx_staging already exists'
+                else
+                  echo '📦 Creating database productx_staging...'
+                  psql -h $DB_HOST -U productx_user -d productx -c 'CREATE DATABASE productx_staging' || {
+                    echo '⚠️ Failed to create database (may already exist or permission issue)'
+                    exit 0
+                  }
+                  echo '✅ Database productx_staging created successfully'
+                fi
+                
+                # Verify database is accessible
+                if psql -h $DB_HOST -U productx_user -d productx_staging -c 'SELECT 1' > /dev/null 2>&1; then
+                  echo '✅ Database productx_staging is accessible'
+                  
+                  # Show database info
+                  echo ''
+                  echo '📊 Database Information:'
+                  psql -h $DB_HOST -U productx_user -d productx_staging -c \"
+                    SELECT 
+                      current_database() as database,
+                      current_user as user,
+                      version() as postgres_version;
+                  \"
+                else
+                  echo '❌ Cannot access database productx_staging'
+                  exit 1
+                fi
+              else
+                echo '❌ Cannot connect to PostgreSQL server at $DB_HOST'
+                echo 'Please check:'
+                echo '  1. Database server is running'
+                echo '  2. DB_HOST is correct in ConfigMap'
+                echo '  3. DB_PASSWORD is correct in Secrets'
+                echo '  4. Network connectivity from staging namespace'
+                exit 1
+              fi
+            " 2>&1 || {
+              echo ""
+              echo "❌ Database initialization failed"
+              echo "This may cause deployment to fail if backend cannot connect"
+              echo ""
+              echo "Manual fix:"
+              echo "  kubectl exec -it <postgres-pod> -n productx -- psql -U productx_user -d productx"
+              echo "  CREATE DATABASE productx_staging;"
+              echo ""
+              exit 1
+            }
+          
+          echo ""
+          echo "✅ Staging database is ready"
 
       - name: Update Deployment Images
         run: |
