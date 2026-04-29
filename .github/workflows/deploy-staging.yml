@@ -284,7 +284,7 @@ jobs:
           
           # Test backend health
           echo "Test 1: Backend Health Check"
-          HEALTH=$(curl -s http://localhost:8080/api/actuator/health || echo "FAILED")
+          HEALTH=$(curl -s http://localhost:8080/actuator/health || echo "FAILED")
           
           if echo "$HEALTH" | grep -q "UP"; then
             echo "✅ Backend is healthy"
