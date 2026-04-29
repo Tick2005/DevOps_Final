@@ -783,7 +783,6 @@ jobs:
               echo "⚠️ Monitoring ingress file not found, skipping"
             fi
           fi
-          fi
       
       - name: Verify Resources
         run: |
