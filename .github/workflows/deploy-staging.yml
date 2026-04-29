@@ -84,9 +84,19 @@ jobs:
             name: app-config
             namespace: ${{ env.STAGING_NAMESPACE }}
           data:
+            # Database settings
+            POSTGRES_DB: "productx_staging"
+            POSTGRES_USER: "productx_user"
             DB_HOST: "$DB_HOST"
             DB_PORT: "5432"
             DB_NAME: "productx_staging"
+            
+            # Spring Boot - Connect to external PostgreSQL
+            SPRING_DATASOURCE_URL: "jdbc:postgresql://${DB_HOST}:5432/productx_staging"
+            SPRING_DATASOURCE_USERNAME: "productx_user"
+            SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
+            SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
+            SPRING_JPA_SHOW_SQL: "false"
             NFS_SERVER: "$NFS_SERVER"
             NFS_PATH: "/mnt/nfs_share/staging"
             APP_ENV: "staging"
@@ -107,6 +117,8 @@ jobs:
           type: Opaque
           stringData:
             DB_PASSWORD: "${{ secrets.DB_PASSWORD }}"
+            POSTGRES_PASSWORD: "${{ secrets.DB_PASSWORD }}"
+            SPRING_DATASOURCE_PASSWORD: "${{ secrets.DB_PASSWORD }}"
           EOF
           
           echo "✅ Staging Secrets applied"
