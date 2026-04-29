@@ -34,7 +34,7 @@ resource "aws_acm_certificate" "production_cert" {
     Name        = "${var.project_name}-production-cert"
     Environment = "production"
     Domain      = var.domain_name
-    Purpose     = "Production ALB"
+    Purpose     = "Production-ALB"
   }
 }
 
@@ -55,7 +55,7 @@ resource "aws_acm_certificate" "staging_cert" {
     Name        = "${var.project_name}-staging-cert"
     Environment = "staging"
     Domain      = local.staging_domain
-    Purpose     = "Staging ALB"
+    Purpose     = "Staging-ALB"
   }
 }
 
@@ -76,7 +76,7 @@ resource "aws_acm_certificate" "monitoring_cert" {
     Name        = "${var.project_name}-monitoring-cert"
     Environment = "production"
     Domain      = local.monitoring_domain
-    Purpose     = "Monitoring ALB (Grafana)"
+    Purpose     = "Monitoring-ALB-Grafana"
   }
 }
 
