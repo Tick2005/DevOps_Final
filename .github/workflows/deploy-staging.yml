@@ -7,6 +7,9 @@
 
 name: Deploy to Staging
 
+permissions:
+  contents: read
+
 on:
   workflow_run:
     workflows: ["Build & Release Docker"]
@@ -392,6 +395,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy-staging
     if: success()
+
+    permissions:
+      actions: write
+      contents: read
     
     environment:
       name: production-approval
@@ -413,6 +420,7 @@ jobs:
       - name: Trigger Production Deployment
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GH_PAT }}
           script: |
             // Get the image tag from staging deployment
             const imageTag = '${{ needs.deploy-staging.outputs.image_tag || 'latest' }}';
