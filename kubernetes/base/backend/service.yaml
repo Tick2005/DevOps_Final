@@ -8,6 +8,8 @@ metadata:
   namespace: productx
   labels:
     app: backend
+  annotations:
+    alb.ingress.kubernetes.io/healthcheck-path: /actuator/health
 spec:
   type: ClusterIP
   selector:
