@@ -96,9 +96,15 @@ jobs:
       - name: Update Ingress Domain
         run: |
           echo "🌐 Updating Ingress with domain..."
-          
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+          if [[ "$DOMAIN" == www.* ]]; then
+            WWW_DOMAIN="$DOMAIN"
+          else
+            WWW_DOMAIN="www.$DOMAIN"
+          fi
+
           # Replace PLACEHOLDER_DOMAIN with actual domain
-          sed -i "s|PLACEHOLDER_DOMAIN|www.${{ secrets.DOMAIN_NAME }}|g" kubernetes/ingress.yaml
+          sed -i "s|PLACEHOLDER_DOMAIN|${WWW_DOMAIN}|g" kubernetes/ingress.yaml
           
           # Show the updated ingress for verification
           echo "📋 Updated Ingress configuration:"
@@ -123,7 +129,7 @@ jobs:
           # Find certificate ARN for the domain (including wildcard)
           CERT_ARN=$(aws acm list-certificates \
             --region ${{ env.AWS_REGION }} \
-            --query "CertificateSummaryList[?DomainName=='${DOMAIN}' || DomainName=='*.${DOMAIN}'].CertificateArn" \
+            --query "CertificateSummaryList[?DomainName=='${DOMAIN}' || DomainName=='*.${DOMAIN}' || DomainName=='www.${DOMAIN}'].CertificateArn" \
             --output text | head -n1)
           
           if [ -z "$CERT_ARN" ]; then
@@ -225,16 +231,15 @@ jobs:
             sed -i '/alb.ingress.kubernetes.io\/actions.ssl-redirect:/,/^[[:space:]]*$/d' kubernetes/ingress.yaml
             sed -i 's/\[{"HTTP": 80}, {"HTTPS": 443}\]/[{"HTTP": 80}]/g' kubernetes/ingress.yaml
             
-            # Remove HTTP redirect rule (the second rule without host)
-            # Keep only the main rule with host
-            sed -i '/# Rule 2: HTTP traffic/,/use-annotation/d' kubernetes/ingress.yaml
+            # Remove HTTP redirect rule (the rule without host)
+            sed -i '/- http:/,/use-annotation/d' kubernetes/ingress.yaml
             
             echo "✅ Ingress configured for HTTP-only (port 80)"
           else
             echo "🔐 Configuring HTTPS with certificate..."
             
             # Update certificate ARN in ingress
-            sed -i "s|arn:aws:acm:REGION:ACCOUNT_ID:certificate/CERTIFICATE_ID|${CERT_ARN}|g" kubernetes/ingress.yaml
+            sed -i "s|PRODUCTION_CERTIFICATE_ARN|${CERT_ARN}|g" kubernetes/ingress.yaml
             
             echo "✅ Ingress configured for HTTPS (ports 80 and 443)"
             echo "📋 Certificate ARN: $CERT_ARN"
