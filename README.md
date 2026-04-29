@@ -23,6 +23,13 @@ See [BUGS_FIXED_SUMMARY.md](./BUGS_FIXED_SUMMARY.md) for details.
 5. **[MONITORING_GUIDE.md](./MONITORING_GUIDE.md)** - ⭐ Monitoring & observability guide
 6. **[QUICK_REFERENCE.md](./QUICK_REFERENCE.md)** - ⭐ Quick command reference
 
+### 🌐 Multi-ALB & SSL Certificates (NEW)
+1. **[QUICK_START_MULTI_ALB.md](./QUICK_START_MULTI_ALB.md)** - ⚡ Quick setup guide (5 minutes)
+2. **[HOSTINGER_SUBDOMAIN_SETUP.md](./HOSTINGER_SUBDOMAIN_SETUP.md)** - 🔐 DNS & SSL configuration on Hostinger
+3. **[MULTI_ALB_DEPLOYMENT_GUIDE.md](./MULTI_ALB_DEPLOYMENT_GUIDE.md)** - 🏗️ Architecture & deployment details
+4. **[SSL_CERTIFICATES_README.md](./SSL_CERTIFICATES_README.md)** - 📚 Comprehensive SSL reference
+5. **[CHANGELOG_MULTI_ALB.md](./CHANGELOG_MULTI_ALB.md)** - 📝 All changes and migration guide
+
 ### 🎯 Original Documentation
 1. **[GITHUB_SECRETS_GUIDE.md](./GITHUB_SECRETS_GUIDE.md)** - Hướng dẫn chi tiết cách tìm và thêm GitHub Secrets
 2. **[PRODUCTION_DEPLOYMENT_GUIDE.md](./PRODUCTION_DEPLOYMENT_GUIDE.md)** - Hướng dẫn triển khai production từng bước
@@ -64,6 +71,8 @@ ProductX là hệ thống quản lý sản phẩm enterprise-grade với:
 - ✅ Rolling updates với zero-downtime
 - ✅ Self-healing containers
 - ✅ HTTPS với ACM Certificate
+- ✅ **Multi-ALB Architecture** - 3 ALB riêng biệt cho Production, Staging, Monitoring
+- ✅ **SSL Certificates** - Tự động tạo và validate certificates cho subdomain
 - ✅ Infrastructure as Code (Terraform)
 - ✅ Configuration Management (Ansible)
 - ✅ Container security scanning (Trivy)
