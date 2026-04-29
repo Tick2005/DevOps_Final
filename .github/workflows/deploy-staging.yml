@@ -112,6 +112,7 @@ jobs:
           echo "✅ Staging Secrets applied"
 
       - name: Update Deployment Images
+        id: tag
         run: |
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
             IMAGE_TAG="${{ github.event.inputs.image_tag }}"
@@ -125,11 +126,15 @@ jobs:
             echo "📦 Using image tag: $IMAGE_TAG"
           fi
           
-          echo "image_tag=${IMAGE_TAG}" >> $GITHUB_OUTPUT
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Update Deployment Images
         run: |
           IMAGE_TAG="${{ steps.tag.outputs.image_tag }}"
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "❌ image_tag output is empty"
+            exit 1
+          fi
           
           # Update backend deployment
           cat kubernetes/base/backend/deployment.yaml | \
