@@ -10,7 +10,7 @@
 locals {
   # Only create HTTPS resources when both conditions are true
   create_https = var.enable_https && var.domain_name != ""
-  
+
   # Subdomain configurations
   staging_domain    = "staging.${var.domain_name}"
   monitoring_domain = "monitoring.${var.domain_name}"
@@ -118,6 +118,19 @@ output "https_status" {
     message = "✅ HTTPS enabled - All certificates ready for Ingress"
     } : {
     enabled = false
+    production = {
+      domain   = "N/A"
+      wildcard = "N/A"
+      cert_arn = "N/A"
+    }
+    staging = {
+      domain   = "N/A"
+      cert_arn = "N/A"
+    }
+    monitoring = {
+      domain   = "N/A"
+      cert_arn = "N/A"
+    }
     message = "⚠️  HTTPS disabled - Set enable_https=true and provide domain_name to enable"
   }
 }
