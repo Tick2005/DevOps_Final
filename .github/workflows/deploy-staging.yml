@@ -260,6 +260,10 @@ jobs:
           echo "📦 Deploying Frontend..."
           kubectl apply -f /tmp/frontend-service.yaml
           kubectl apply -f /tmp/frontend-deployment.yaml
+
+          # Ensure pods pick up latest ConfigMap/Secret changes
+          kubectl rollout restart deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout restart deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
           
           # Wait for rollout
           echo "⏳ Waiting for rollout to complete..."
