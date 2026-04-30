@@ -1,17 +1,17 @@
 # =============================================================================
 # DEPLOY-CD.YML - Continuous Deployment for ProductX
 # =============================================================================
-# Trigger: Tự động chạy khi "Build & Release Docker" thành công
+# Trigger: Tự động chạy khi Deploy to Staging hoàn thành hoặc chạy thủ công
 # =============================================================================
 
 name: Continuous Deployment (CD)
 
 on:
   workflow_run:
-    workflows: ["Build & Release Docker"]
+    workflows: ["Deploy to Staging"]
     types:
       - completed
-  
+
   workflow_dispatch:
     inputs:
       image_tag:
@@ -34,7 +34,7 @@ jobs:
   deploy:
     name: Deploy Application to EKS
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     
     environment:
       name: production
@@ -44,7 +44,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -64,16 +64,19 @@ jobs:
         run: |
           # Determine image tag based on trigger type
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual trigger: use input tag
             IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            if [ -z "$IMAGE_TAG" ]; then
+              IMAGE_TAG="latest"
+            fi
+
             echo "🔧 Manual deployment triggered"
             echo "📦 Using image tag: $IMAGE_TAG"
             echo "📝 Reason: ${{ github.event.inputs.reason }}"
           else
-            # Automatic trigger: use commit SHA
             COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
             SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
             IMAGE_TAG="sha-${SHORT_SHA}"
+
             echo "🤖 Automatic deployment triggered"
             echo "📦 Deploying commit: $COMMIT_SHA"
             echo "📦 Using image tag: $IMAGE_TAG"
@@ -252,52 +255,6 @@ jobs:
           echo ""
           echo "📋 Final Ingress configuration:"
           cat kubernetes/ingress.yaml
-
-      - name: Clean Up Old ALB (if exists)
-        run: |
-          echo "🧹 Checking for existing ALB with wrong configuration..."
-          
-          # Check if ingress exists
-          if kubectl get ingress app-ingress -n productx &>/dev/null; then
-            echo "📋 Current ingress found"
-            
-            # Get current ALB hostname
-            CURRENT_ALB=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null || echo "")
-            
-            if [ -n "$CURRENT_ALB" ]; then
-              echo "🔍 Current ALB: $CURRENT_ALB"
-              
-              # Check if ALB has HTTPS listener (wrong config)
-              echo "🔍 Checking ALB listeners..."
-              ALB_ARN=$(aws elbv2 describe-load-balancers \
-                --query "LoadBalancers[?DNSName=='$CURRENT_ALB'].LoadBalancerArn" \
-                --output text 2>/dev/null || echo "")
-              
-              if [ -n "$ALB_ARN" ]; then
-                HTTPS_LISTENER=$(aws elbv2 describe-listeners \
-                  --load-balancer-arn "$ALB_ARN" \
-                  --query "Listeners[?Port==\`443\`].ListenerArn" \
-                  --output text 2>/dev/null || echo "")
-                
-                if [ -n "$HTTPS_LISTENER" ]; then
-                  echo "⚠️ ALB has HTTPS listener (port 443) - needs recreation"
-                  echo "🗑️ Deleting ingress to force ALB recreation..."
-                  kubectl delete ingress app-ingress -n productx
-                  
-                  echo "⏳ Waiting for ALB to be deleted..."
-                  sleep 30
-                  
-                  echo "✅ Old ALB will be cleaned up by AWS"
-                else
-                  echo "✅ ALB has correct configuration (HTTP only)"
-                fi
-              fi
-            else
-              echo "📋 No ALB found yet"
-            fi
-          else
-            echo "📋 No existing ingress found"
-          fi
 
       - name: Deploy Application
         run: |
