@@ -384,56 +384,5 @@ jobs:
           echo "📝 Commit: ${{ github.sha }}"
           echo "👤 Deployed by: ${{ github.actor }}"
           echo ""
-          echo "⏭️  Next: Manual approval required for Production deployment"
+          echo "⏭️  Next: Continuous Deployment (CD) will run automatically"
           echo "============================================="
-
-  # ===========================================================================
-  # JOB: PROMOTE TO PRODUCTION (Manual Approval Required)
-  # ===========================================================================
-  promote-to-production:
-    name: Promote to Production
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    if: success()
-
-    permissions:
-      actions: write
-      contents: read
-    
-    environment:
-      name: production-approval
-      url: https://www.tranduchuy.site
-
-    steps:
-      - name: Promotion Approved
-        run: |
-          echo "============================================="
-          echo "✅ STAGING TESTS PASSED"
-          echo "============================================="
-          echo ""
-          echo "Staging deployment has been tested and approved."
-          echo "Ready to promote to production."
-          echo ""
-          echo "The production deployment workflow will be triggered automatically."
-          echo "============================================="
-      
-      - name: Trigger Production Deployment
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GH_PAT }}
-          script: |
-            // Get the image tag from staging deployment
-            const imageTag = '${{ needs.deploy-staging.outputs.image_tag || 'latest' }}';
-            
-            await github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'deploy-cd.yml',
-              ref: context.ref,
-              inputs: {
-                image_tag: imageTag,
-                reason: 'Promoted from staging after successful tests'
-              }
-            });
-            
-            console.log('✅ Production deployment triggered with image tag:', imageTag);
