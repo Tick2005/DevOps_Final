@@ -133,7 +133,7 @@ jobs:
         working-directory: ansible
         run: |
           ansible-playbook -i inventory/hosts.ini playbooks/database.yml \
-            -e "db_name=productx_staging db_user=productx_user db_password=${{ secrets.DB_PASSWORD }}" \
+            -e "db_name=productx_staging db_user=productx_staging_user db_password=${{ secrets.DB_PASSWORD_STAGING }}" \
             -v
 
       - name: Apply Staging ConfigMap
@@ -156,7 +156,7 @@ jobs:
             DB_PORT: "5432"
             DB_NAME: "productx_staging"
             SPRING_DATASOURCE_URL: "jdbc:postgresql://${DB_HOST}:5432/productx_staging"
-            SPRING_DATASOURCE_USERNAME: "productx_user"
+            SPRING_DATASOURCE_USERNAME: "productx_staging_user"
             NFS_SERVER: "$NFS_SERVER"
             NFS_PATH: "/mnt/nfs_share/staging"
             APP_ENV: "staging"
@@ -176,8 +176,8 @@ jobs:
             namespace: ${{ env.STAGING_NAMESPACE }}
           type: Opaque
           stringData:
-            DB_PASSWORD: "${{ secrets.DB_PASSWORD }}"
-            SPRING_DATASOURCE_PASSWORD: "${{ secrets.DB_PASSWORD }}"
+            DB_PASSWORD: "${{ secrets.DB_PASSWORD_STAGING }}"
+            SPRING_DATASOURCE_PASSWORD: "${{ secrets.DB_PASSWORD_STAGING }}"
           EOF
           
           echo "✅ Staging Secrets applied"
