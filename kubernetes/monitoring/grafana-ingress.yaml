@@ -1,8 +1,5 @@
 # =============================================================================
-# GRAFANA-INGRESS.YAML - Expose Grafana via Subdomain
-# =============================================================================
-# Sử dụng IngressGroup để dùng chung ALB với app (tiết kiệm chi phí)
-# Subdomain: grafana.tranduchuy.site
+# GRAFANA INGRESS - Public access to Grafana via ALB
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -10,22 +7,18 @@ metadata:
   name: grafana-ingress
   namespace: monitoring
   annotations:
-    # IngressGroup - Dùng chung ALB với app-ingress
-    alb.ingress.kubernetes.io/group.name: productx-alb-group
+    kubernetes.io/ingress.class: alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
-    alb.ingress.kubernetes.io/certificate-arn: 'PLACEHOLDER_CERT_ARN'
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: PLACEHOLDER_CERT_ARN
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
     alb.ingress.kubernetes.io/healthcheck-path: /api/health
-    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '15'
-    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: '5'
-    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
-    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
 spec:
-  ingressClassName: alb
   rules:
-    - host: grafana.PLACEHOLDER_DOMAIN
+    - host: monitoring.PLACEHOLDER_DOMAIN
       http:
         paths:
           - path: /

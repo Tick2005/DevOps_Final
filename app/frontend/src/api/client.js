@@ -2,13 +2,18 @@ const API_BASE = import.meta.env.VITE_API_BASE || '/api'
 
 export const FALLBACK_IMAGE = `data:image/svg+xml,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#dfe8fb"/><stop offset="100%" stop-color="#f3f7ff"/></linearGradient></defs><rect width="160" height="160" rx="80" fill="url(#g)"/><circle cx="80" cy="62" r="24" fill="#a9bde7"/><rect x="38" y="100" width="84" height="36" rx="18" fill="#bdd0f4"/></svg>')}`
 
+function resolveId(item) {
+  const rawId = item?.id ?? null
+  return rawId === null || rawId === undefined ? '' : String(rawId)
+}
+
 function normalizeProduct(item) {
   return {
-    id: String(item.id),
-    name: item.name || 'Unnamed product',
+    id: resolveId(item),
+    name: item.name || '',
     price: Number(item.price || 0),
-    color: item.color || '-',
-    category: item.category || '-',
+    color: item.color || '',
+    category: item.category || '',
     stock: Number(item.stock || 0),
     description: item.description || '',
     image: item.image || item.imageUrl || '',
@@ -20,15 +25,46 @@ function normalizeProduct(item) {
 }
 
 function toPayload(payload) {
-  return {
+  // Parse and validate stock - must be integer
+  const stock = payload.stock === '' || payload.stock === null || payload.stock === undefined 
+    ? 0 
+    : Math.floor(Number(payload.stock))
+  
+  // Parse and validate price - must be positive number
+  const price = payload.price === '' || payload.price === null || payload.price === undefined
+    ? 0.01
+    : Number(payload.price)
+  
+  const result = {
     name: payload.name.trim(),
     color: payload.color.trim(),
-    description: payload.description.trim(),
+    description: (payload.description || '').trim(),
     category: (payload.category || '').trim(),
     image: payload.image || '',
-    stock: Number(payload.stock || 0),
-    price: Number(payload.price)
+    stock: stock < 0 ? 0 : stock,  // Ensure non-negative
+    price: price <= 0 ? 0.01 : price  // Ensure positive
   }
+  
+  // Debug logging - log each field separately
+  console.log('=== toPayload Debug ===')
+  console.log('Input price:', payload.price, 'type:', typeof payload.price)
+  console.log('Input stock:', payload.stock, 'type:', typeof payload.stock)
+  console.log('Parsed price:', price, 'type:', typeof price)
+  console.log('Parsed stock:', stock, 'type:', typeof stock)
+  console.log('Result price:', result.price, 'type:', typeof result.price)
+  console.log('Result stock:', result.stock, 'type:', typeof result.stock)
+  console.log('Full result:', JSON.stringify(result, null, 2))
+  console.log('======================')
+  
+  return result
+}
+
+function assertValidId(id) {
+  const value = id === null || id === undefined ? '' : String(id).trim()
+  if (!value) {
+    throw new Error('Invalid product id. Please refresh and try again.')
+  }
+  return value
 }
 
 async function request(path, options) {
@@ -38,15 +74,36 @@ async function request(path, options) {
       headers: { 'Content-Type': 'application/json' },
       ...options
     })
-  } catch {
+  } catch (error) {
+    console.error('Fetch error:', error)
     throw new Error('Backend is starting. Please wait a moment and press Refresh.')
   }
 
   if (!response.ok) {
+    // Try to get error details from response
+    let errorMessage = `Request failed (${response.status})`
+    try {
+      const errorData = await response.json()
+      console.error('Backend error response:', errorData)
+      if (errorData.message) {
+        errorMessage = errorData.message
+      } else if (errorData.errors) {
+        errorMessage = Object.values(errorData.errors).join(', ')
+      }
+    } catch {
+      // If response is not JSON, try to get text
+      try {
+        const errorText = await response.text()
+        console.error('Backend error text:', errorText)
+      } catch {
+        // Ignore
+      }
+    }
+    
     if ([502, 503, 504].includes(response.status)) {
       throw new Error('Backend is warming up. Please wait a few seconds and try again.')
     }
-    throw new Error(`Request failed (${response.status}). Please try again.`)
+    throw new Error(errorMessage)
   }
 
   if (response.status === 204) {
@@ -58,15 +115,26 @@ async function request(path, options) {
 
 export async function listProducts() {
   const data = await request('/products', { method: 'GET' })
+  let runtime = null
+  try {
+    runtime = await request('/health/runtime', { method: 'GET' })
+  } catch {
+    runtime = null
+  }
+
   const items = Array.isArray(data) ? data.map(normalizeProduct) : []
   const first = items[0] || null
+  const sourceLabel = runtime?.source || first?.source || 'Unknown'
+
   return {
     items,
-    source: 'API + MongoDB',
+    source: `API + ${sourceLabel}`,
     sourceInfo: {
-      source: first?.source || '-',
-      host: first?.host || '-',
-      tier: first?.tier || '-'
+      status: runtime?.status || 'Online',
+      source: sourceLabel,
+      host: runtime?.host || first?.host || '-',
+      tier: runtime?.tier || first?.tier || '-',
+      version: runtime?.version || null
     }
   }
 }
@@ -79,12 +147,14 @@ export async function createProduct(payload) {
 }
 
 export async function updateProduct(id, payload) {
-  return normalizeProduct(await request(`/products/${id}`, {
+  const safeId = assertValidId(id)
+  return normalizeProduct(await request(`/products/${safeId}`, {
     method: 'PUT',
     body: JSON.stringify(toPayload(payload))
   }))
 }
 
 export async function deleteProduct(id) {
-  await request(`/products/${id}`, { method: 'DELETE' })
+  const safeId = assertValidId(id)
+  await request(`/products/${safeId}`, { method: 'DELETE' })
 }

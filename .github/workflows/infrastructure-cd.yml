@@ -199,7 +199,7 @@ jobs:
     
     environment:
       name: production-infrastructure
-      url: https://productx.online
+      url: https://www.tranduchuy.site
     
     outputs:
       db_public_ip: ${{ steps.outputs.outputs.db_public_ip }}
@@ -479,6 +479,204 @@ jobs:
           echo "✅ Monitoring Stack deployment initiated"
           echo "⏳ Note: Prometheus and Grafana may take 5-10 minutes to fully start"
       
+      - name: Wait for Monitoring Pods to be Ready
+        run: |
+          echo "⏳ Waiting for monitoring pods to be ready..."
+          
+          # Wait for Prometheus Operator
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=kube-prometheus-stack-operator \
+            -n monitoring \
+            --timeout=300s || echo "⚠️ Operator not ready yet"
+          
+          # Wait for Grafana
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=grafana \
+            -n monitoring \
+            --timeout=300s || echo "⚠️ Grafana not ready yet"
+          
+          # Wait for Alertmanager
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=alertmanager \
+            -n monitoring \
+            --timeout=300s || echo "⚠️ Alertmanager not ready yet"
+          
+          # Note: Prometheus may take longer due to resource requirements
+          echo "⏳ Waiting for Prometheus (may take longer)..."
+          kubectl wait --for=condition=ready pod \
+            -l app.kubernetes.io/name=prometheus \
+            -n monitoring \
+            --timeout=600s || echo "⚠️ Prometheus not ready yet (check node resources)"
+          
+          echo "✅ Monitoring pods check completed!"
+      
+      - name: Test Prometheus Health
+        id: test_prometheus
+        continue-on-error: true
+        run: |
+          echo "🧪 Testing Prometheus health..."
+          
+          # Port forward Prometheus
+          kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 10
+          
+          # Check Prometheus health
+          PROM_HEALTH=$(curl -s http://localhost:9090/-/healthy || echo "FAILED")
+          
+          if [ "$PROM_HEALTH" = "Prometheus Server is Healthy." ] || [ "$PROM_HEALTH" = "Prometheus is Healthy." ]; then
+            echo "✅ Prometheus is healthy"
+            
+            # Check Prometheus targets
+            echo "📊 Checking Prometheus targets..."
+            TARGETS=$(curl -s http://localhost:9090/api/v1/targets | jq -r '.data.activeTargets | length')
+            echo "Active targets: $TARGETS"
+            
+            if [ "$TARGETS" -gt 0 ]; then
+              echo "✅ Prometheus has $TARGETS active targets"
+            else
+              echo "⚠️ Prometheus has no active targets yet"
+            fi
+          else
+            echo "⚠️ Prometheus health check returned: $PROM_HEALTH"
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+      
+      - name: Test Grafana Health
+        id: test_grafana
+        continue-on-error: true
+        run: |
+          echo "🧪 Testing Grafana health..."
+          
+          # Port forward Grafana
+          kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80 &
+          PF_PID=$!
+          sleep 10
+          
+          # Check Grafana health
+          GRAFANA_HEALTH=$(curl -s http://localhost:3000/api/health || echo "FAILED")
+          
+          if echo "$GRAFANA_HEALTH" | grep -q "ok"; then
+            echo "✅ Grafana is healthy"
+            
+            # Check Grafana version
+            GRAFANA_VERSION=$(echo "$GRAFANA_HEALTH" | jq -r '.version' 2>/dev/null || echo "unknown")
+            echo "Grafana version: $GRAFANA_VERSION"
+          else
+            echo "⚠️ Grafana health check failed: $GRAFANA_HEALTH"
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+      
+      - name: Test Alertmanager Health
+        id: test_alertmanager
+        continue-on-error: true
+        run: |
+          echo "🧪 Testing Alertmanager health..."
+          
+          # Port forward Alertmanager
+          kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093 &
+          PF_PID=$!
+          sleep 10
+          
+          # Check Alertmanager health
+          AM_HEALTH=$(curl -s http://localhost:9093/-/healthy || echo "FAILED")
+          
+          if [ "$AM_HEALTH" = "OK" ]; then
+            echo "✅ Alertmanager is healthy"
+            
+            # Check Alertmanager status
+            AM_STATUS=$(curl -s http://localhost:9093/api/v2/status)
+            echo "Alertmanager status: $AM_STATUS"
+          else
+            echo "⚠️ Alertmanager health check failed: $AM_HEALTH"
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+      
+      - name: Verify Metrics Collection
+        continue-on-error: true
+        run: |
+          echo "📊 Verifying metrics collection..."
+          
+          # Port forward Prometheus
+          kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090 &
+          PF_PID=$!
+          sleep 10
+          
+          # Query some basic metrics
+          echo "Checking node metrics..."
+          NODE_METRICS=$(curl -s 'http://localhost:9090/api/v1/query?query=up{job="node-exporter"}' | jq -r '.data.result | length')
+          echo "Node exporter metrics: $NODE_METRICS targets"
+          
+          echo "Checking Kubernetes metrics..."
+          K8S_METRICS=$(curl -s 'http://localhost:9090/api/v1/query?query=up{job="kube-state-metrics"}' | jq -r '.data.result | length')
+          echo "Kube-state-metrics: $K8S_METRICS targets"
+          
+          echo "Checking pod metrics..."
+          POD_METRICS=$(curl -s 'http://localhost:9090/api/v1/query?query=kube_pod_info' | jq -r '.data.result | length')
+          echo "Pod metrics: $POD_METRICS pods"
+          
+          if [ "$POD_METRICS" -gt 0 ]; then
+            echo "✅ Metrics are being collected successfully"
+          else
+            echo "⚠️ No pod metrics found yet (may need more time)"
+          fi
+          
+          # Cleanup
+          kill $PF_PID 2>/dev/null || true
+      
+      - name: Print Monitoring Stack Summary
+        run: |
+          echo "============================================="
+          echo "📊 MONITORING STACK SUMMARY"
+          echo "============================================="
+          echo ""
+          echo "Components Status:"
+          
+          if [ "${{ steps.test_prometheus.outcome }}" = "success" ]; then
+            echo "  ✅ Prometheus: Healthy"
+          else
+            echo "  ⚠️ Prometheus: Check manually"
+          fi
+          
+          if [ "${{ steps.test_grafana.outcome }}" = "success" ]; then
+            echo "  ✅ Grafana: Healthy"
+          else
+            echo "  ⚠️ Grafana: Check manually"
+          fi
+          
+          if [ "${{ steps.test_alertmanager.outcome }}" = "success" ]; then
+            echo "  ✅ Alertmanager: Healthy"
+          else
+            echo "  ⚠️ Alertmanager: Check manually"
+          fi
+          
+          echo ""
+          echo "Access URLs:"
+          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "  Grafana:      https://monitoring.${{ secrets.DOMAIN_NAME }}"
+            echo "                Username: admin"
+            echo "                Password: (from secret GRAFANA_ADMIN_PASSWORD)"
+          else
+            echo "  Prometheus:   kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 9090:9090"
+            echo "                http://localhost:9090"
+            echo ""
+            echo "  Grafana:      kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
+            echo "                http://localhost:3000"
+            echo "                Username: admin"
+            echo "                Password: (from secret GRAFANA_ADMIN_PASSWORD)"
+            echo ""
+            echo "  Alertmanager: kubectl port-forward -n monitoring svc/kube-prometheus-stack-alertmanager 9093:9093"
+            echo "                http://localhost:9093"
+          fi
+          echo ""
+          echo "============================================="
+      
       - name: Apply Namespace
         run: kubectl apply -f kubernetes/namespace.yaml
       
@@ -521,45 +719,69 @@ jobs:
           kubectl apply -f kubernetes/base/backend/hpa.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
       
-      - name: Apply Ingress
+      - name: Apply Production Ingress
         run: |
-          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          PROD_CERT_ARN=$(jq -r '.production_certificate_arn.value // "N/A"' outputs.json)
           
-          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            echo "✅ HTTPS enabled"
+          if [ "$PROD_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ HTTPS enabled for Production"
             cat kubernetes/ingress.yaml | \
-              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PRODUCTION_CERTIFICATE_ARN|${PROD_CERT_ARN}|g" | \
               sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
               kubectl apply -f -
           else
-            echo "⚠️ HTTP-only mode"
+            echo "⚠️ HTTP-only mode for Production"
             cat kubernetes/ingress.yaml | \
               sed '/certificate-arn/d' | \
               sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
               sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
               kubectl apply -f -
           fi
       
-      - name: Patch Ingress Host for www Subdomain
+      - name: Apply Staging Ingress
         run: |
-          echo "🔧 Patching Ingress host to support www subdomain..."
+          STAGING_CERT_ARN=$(jq -r '.staging_certificate_arn.value // "N/A"' outputs.json)
           
-          # Patch ingress to use www.domain instead of root domain
-          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            kubectl patch ingress app-ingress -n productx --type='json' -p='[
-              {
-                "op": "replace",
-                "path": "/spec/rules/0/host",
-                "value": "www.${{ secrets.DOMAIN_NAME }}"
-              }
-            ]'
-            
-            echo "✅ Ingress host updated to: www.${{ secrets.DOMAIN_NAME }}"
-            
-            # Verify
-            kubectl describe ingress app-ingress -n productx | grep Host
+          if [ "$STAGING_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Staging Ingress with HTTPS"
+            cat kubernetes/ingress-staging.yaml | \
+              sed "s|STAGING_CERTIFICATE_ARN|${STAGING_CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
           else
-            echo "⚠️ No domain configured, skipping host patch"
+            echo "⚠️ Applying Staging Ingress (HTTP-only mode)"
+            cat kubernetes/ingress-staging.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          fi
+      
+      - name: Apply Monitoring Ingress (Grafana)
+        run: |
+          MONITORING_CERT_ARN=$(jq -r '.monitoring_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$MONITORING_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Monitoring Ingress with HTTPS"
+            cat kubernetes/ingress-monitoring.yaml | \
+              sed "s|MONITORING_CERTIFICATE_ARN|${MONITORING_CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Monitoring Ingress (HTTP-only mode)"
+            # Fallback to old grafana-ingress.yaml if exists
+            if [ -f kubernetes/monitoring/grafana-ingress.yaml ]; then
+              cat kubernetes/monitoring/grafana-ingress.yaml | \
+                sed '/certificate-arn/d' | \
+                sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+                sed '/ssl-redirect/d' | \
+                sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+                kubectl apply -f -
+            else
+              echo "⚠️ Monitoring ingress file not found, skipping"
+            fi
           fi
       
       - name: Verify Resources

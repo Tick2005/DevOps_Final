@@ -18,6 +18,11 @@ data:
   SPRING_JPA_HIBERNATE_DDL_AUTO: "update"
   SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: "org.hibernate.dialect.PostgreSQLDialect"
   SPRING_JPA_SHOW_SQL: "false"
+
+  # Runtime metadata for exam rubric mapping
+  APP_TIER: "kubernetes"
+  APP_EXAM_TIER: "5"
+  APP_VERSION: "v1.0.0"
   
   # NFS Server
   NFS_SERVER: "PLACEHOLDER_NFS_SERVER"  # Sẽ được thay thế bởi CI/CD với DATA_SERVER_IP

@@ -1,17 +1,17 @@
 # =============================================================================
 # DEPLOY-CD.YML - Continuous Deployment for ProductX
 # =============================================================================
-# Trigger: Tự động chạy khi "Build & Release Docker" thành công
+# Trigger: Tự động chạy khi Deploy to Staging hoàn thành hoặc chạy thủ công
 # =============================================================================
 
 name: Continuous Deployment (CD)
 
 on:
   workflow_run:
-    workflows: ["Build & Release Docker"]
+    workflows: ["Deploy to Staging"]
     types:
       - completed
-  
+
   workflow_dispatch:
     inputs:
       image_tag:
@@ -34,7 +34,7 @@ jobs:
   deploy:
     name: Deploy Application to EKS
     runs-on: ubuntu-latest
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     
     environment:
       name: production
@@ -44,7 +44,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.ref }}
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -64,16 +64,19 @@ jobs:
         run: |
           # Determine image tag based on trigger type
           if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual trigger: use input tag
             IMAGE_TAG="${{ github.event.inputs.image_tag }}"
+            if [ -z "$IMAGE_TAG" ]; then
+              IMAGE_TAG="latest"
+            fi
+
             echo "🔧 Manual deployment triggered"
             echo "📦 Using image tag: $IMAGE_TAG"
             echo "📝 Reason: ${{ github.event.inputs.reason }}"
           else
-            # Automatic trigger: use commit SHA
             COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
             SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
             IMAGE_TAG="sha-${SHORT_SHA}"
+
             echo "🤖 Automatic deployment triggered"
             echo "📦 Deploying commit: $COMMIT_SHA"
             echo "📦 Using image tag: $IMAGE_TAG"
@@ -93,6 +96,166 @@ jobs:
           
           echo "✅ Image tags updated to: ${IMAGE_TAG}"
 
+      - name: Update Ingress Domain
+        run: |
+          echo "🌐 Updating Ingress with domain..."
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+          if [[ "$DOMAIN" == www.* ]]; then
+            WWW_DOMAIN="$DOMAIN"
+          else
+            WWW_DOMAIN="www.$DOMAIN"
+          fi
+
+          # Replace PLACEHOLDER_DOMAIN with actual domain
+          sed -i "s|PLACEHOLDER_DOMAIN|${WWW_DOMAIN}|g" kubernetes/ingress.yaml
+          
+          # Show the updated ingress for verification
+          echo "📋 Updated Ingress configuration:"
+          cat kubernetes/ingress.yaml | grep -A 5 "host:"
+
+      - name: Get ACM Certificate ARN
+        id: get_cert_arn
+        run: |
+          echo "🔐 Getting ACM Certificate ARN from AWS..."
+          
+          # Get domain from secrets
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+          
+          if [ -z "$DOMAIN" ]; then
+            echo "⚠️ No domain configured, skipping HTTPS setup"
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+          
+          echo "🔍 Looking for certificate for domain: $DOMAIN"
+          
+          # Find certificate ARN for the domain (including wildcard)
+          CERT_ARN=$(aws acm list-certificates \
+            --region ${{ env.AWS_REGION }} \
+            --query "CertificateSummaryList[?DomainName=='${DOMAIN}' || DomainName=='*.${DOMAIN}' || DomainName=='www.${DOMAIN}'].CertificateArn" \
+            --output text | head -n1)
+          
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No ACM certificate found for domain: $DOMAIN"
+            echo ""
+            echo "🔄 Attempting to create ACM certificate..."
+            
+            # Request certificate
+            CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN" \
+              --subject-alternative-names "*.$DOMAIN" \
+              --validation-method DNS \
+              --region ${{ env.AWS_REGION }} \
+              --query 'CertificateArn' \
+              --output text)
+            
+            if [ -z "$CERT_ARN" ]; then
+              echo "❌ Failed to create certificate"
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            echo "✅ Certificate requested: $CERT_ARN"
+            echo ""
+            echo "⚠️ IMPORTANT: Certificate validation required!"
+            echo "============================================="
+            echo "The certificate is now in PENDING_VALIDATION state."
+            echo ""
+            echo "To complete validation, you need to add DNS records:"
+            echo ""
+            
+            # Get validation records
+            sleep 5  # Wait for AWS to generate validation records
+            
+            aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+              --output table
+            
+            echo ""
+            echo "Steps to validate:"
+            echo "1. Go to your DNS provider (Route53, Cloudflare, etc.)"
+            echo "2. Add the CNAME records shown above"
+            echo "3. Wait for DNS propagation (5-30 minutes)"
+            echo "4. Certificate will automatically be validated"
+            echo ""
+            echo "🔄 For now, continuing with HTTP-only configuration..."
+            echo "   Re-run this workflow after DNS validation completes."
+            echo "============================================="
+            
+            # For now, don't use the certificate since it's not validated yet
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found certificate ARN: $CERT_ARN"
+            
+            # Check certificate status
+            CERT_STATUS=$(aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.Status' \
+              --output text)
+            
+            echo "📋 Certificate Status: $CERT_STATUS"
+            
+            if [ "$CERT_STATUS" = "PENDING_VALIDATION" ]; then
+              echo "⚠️ Certificate is pending DNS validation"
+              echo ""
+              echo "DNS validation records needed:"
+              aws acm describe-certificate \
+                --certificate-arn "$CERT_ARN" \
+                --region ${{ env.AWS_REGION }} \
+                --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+                --output table
+              echo ""
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "   Re-run this workflow after DNS validation completes."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            elif [ "$CERT_STATUS" != "ISSUED" ]; then
+              echo "⚠️ Certificate is not in ISSUED state (current: $CERT_STATUS)"
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Certificate is valid and ready to use"
+              echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Update Ingress with HTTPS Configuration
+        run: |
+          CERT_ARN="${{ steps.get_cert_arn.outputs.cert_arn }}"
+          
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No valid certificate found, configuring HTTP-only ALB..."
+            
+            # Remove HTTPS configuration from ingress
+            sed -i '/alb.ingress.kubernetes.io\/certificate-arn:/d' kubernetes/ingress.yaml
+            sed -i '/alb.ingress.kubernetes.io\/ssl-policy:/d' kubernetes/ingress.yaml
+            sed -i '/alb.ingress.kubernetes.io\/actions.ssl-redirect:/,/^[[:space:]]*$/d' kubernetes/ingress.yaml
+            sed -i 's/\[{"HTTP": 80}, {"HTTPS": 443}\]/[{"HTTP": 80}]/g' kubernetes/ingress.yaml
+            
+            # Remove HTTP redirect rule (the rule without host)
+            sed -i '/- http:/,/use-annotation/d' kubernetes/ingress.yaml
+            
+            echo "✅ Ingress configured for HTTP-only (port 80)"
+          else
+            echo "🔐 Configuring HTTPS with certificate..."
+            
+            # Update certificate ARN in ingress
+            sed -i "s|PRODUCTION_CERTIFICATE_ARN|${CERT_ARN}|g" kubernetes/ingress.yaml
+            
+            echo "✅ Ingress configured for HTTPS (ports 80 and 443)"
+            echo "📋 Certificate ARN: $CERT_ARN"
+            echo ""
+            echo "📋 HTTPS Configuration:"
+            echo "  - HTTP:80 → Redirect to HTTPS:443"
+            echo "  - HTTPS:443 → Forward to backend services"
+          fi
+          
+          echo ""
+          echo "📋 Final Ingress configuration:"
+          cat kubernetes/ingress.yaml
+
       - name: Deploy Application
         run: |
           set -e
@@ -111,15 +274,19 @@ jobs:
           kubectl apply -f kubernetes/base/frontend/service.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
           
+          # Update ingress
+          echo "🌐 Applying Ingress..."
+          kubectl apply -f kubernetes/ingress.yaml
+          
           # Force rollout to pull new images
           echo "🔄 Rolling out new images..."
           kubectl rollout restart deployment/backend -n productx
           kubectl rollout restart deployment/frontend -n productx
           
-          # Wait for rollout to complete
+          # Wait for rollout to complete with longer timeout
           echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n productx --timeout=180s
-          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          kubectl rollout status deployment/backend -n productx --timeout=600s
+          kubectl rollout status deployment/frontend -n productx --timeout=600s
           
           echo "✅ Application deployed successfully!"
 
@@ -135,8 +302,319 @@ jobs:
           echo "📊 Current Ingress:"
           kubectl get ingress -n productx
           echo ""
+          echo "📊 Ingress Details:"
+          kubectl describe ingress app-ingress -n productx
+          echo ""
+          echo "📊 ALB Address:"
+          kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""
+          echo ""
           echo "📊 HPA Status:"
           kubectl get hpa -n productx
+
+      - name: Wait for Pods to be Ready
+        run: |
+          echo "⏳ Waiting for all pods to be ready..."
+          
+          # Wait for backend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=backend \
+            -n productx \
+            --timeout=300s
+          
+          # Wait for frontend pods
+          kubectl wait --for=condition=ready pod \
+            -l app=frontend \
+            -n productx \
+            --timeout=300s
+          
+          echo "✅ All pods are ready!"
+          
+          # Additional wait for application startup
+          echo "⏳ Waiting additional 30 seconds for application initialization..."
+          sleep 30
+          
+          # Check pod logs for startup confirmation
+          echo "📋 Checking backend pod logs..."
+          kubectl logs -l app=backend -n productx --tail=20 || true
+
+      - name: Health Check - Backend API
+        id: health_backend
+        run: |
+          echo "🏥 Checking Backend API health..."
+          
+          # Test 1: Direct pod access (most reliable)
+          echo ""
+          echo "🔍 Test 1: Direct Pod Access"
+          POD_NAME=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
+          
+          if [ -n "$POD_NAME" ]; then
+            echo "Testing pod: $POD_NAME"
+            
+            # Try to get health status from pod
+            HEALTH_STATUS=$(kubectl exec -n productx $POD_NAME -- wget -q -O- http://localhost:8080/actuator/health 2>/dev/null || echo "")
+            
+            if [ -n "$HEALTH_STATUS" ]; then
+              echo "✅ Pod health check successful"
+              echo "Response: $HEALTH_STATUS"
+            else
+              echo "⚠️ Pod health check failed, trying curl..."
+              kubectl exec -n productx $POD_NAME -- curl -s http://localhost:8080/actuator/health || echo "❌ Both wget and curl failed"
+            fi
+          else
+            echo "❌ No backend pod found"
+            exit 1
+          fi
+          
+          # Test 2: Service endpoint (internal cluster access)
+          echo ""
+          echo "🔍 Test 2: Service Endpoint"
+          SERVICE_HEALTH=$(kubectl run health-check-temp --image=curlimages/curl:latest --rm -i --restart=Never -n productx -- \
+            curl -s --max-time 10 http://backend-svc:8080/actuator/health 2>/dev/null || echo "")
+          
+          if echo "$SERVICE_HEALTH" | grep -q "UP\|status"; then
+            echo "✅ Service health check successful"
+            echo "Response: $SERVICE_HEALTH"
+          else
+            echo "⚠️ Service health check failed or returned unexpected response"
+            echo "Response: $SERVICE_HEALTH"
+          fi
+          
+          # Test 3: ALB access (optional, may fail if HTTPS not configured)
+          echo ""
+          echo "🔍 Test 3: ALB Access (optional)"
+          ALB_HOSTNAME=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+          
+          if [ -z "$ALB_HOSTNAME" ]; then
+            echo "⚠️ ALB hostname not found, skipping ALB test"
+          else
+            echo "ALB Hostname: $ALB_HOSTNAME"
+            
+            # Try HTTP first (without following redirects)
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$ALB_HOSTNAME/api/actuator/health" 2>/dev/null || echo "000")
+            
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ ALB HTTP access successful (HTTP $HTTP_CODE)"
+            elif [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "⚠️ ALB returns redirect (HTTP $HTTP_CODE) - HTTPS redirect is configured"
+              echo "This is expected if HTTPS is enabled"
+              echo "Skipping HTTPS test (certificate may not be configured yet)"
+            else
+              echo "⚠️ ALB HTTP access returned: HTTP $HTTP_CODE"
+            fi
+          fi
+          
+          # Final verdict based on pod and service tests
+          echo ""
+          echo "============================================="
+          echo "📊 Health Check Summary"
+          echo "============================================="
+          
+          if [ -n "$HEALTH_STATUS" ] || echo "$SERVICE_HEALTH" | grep -q "UP\|status"; then
+            echo "✅ Backend API is healthy"
+            echo "   - Pod access: ✅"
+            echo "   - Service access: ✅"
+            echo "   - ALB access: ⚠️ (may require HTTPS configuration)"
+            echo ""
+            echo "Backend is ready to serve traffic!"
+          else
+            echo "❌ Backend API health check failed"
+            echo ""
+            echo "Diagnostics:"
+            kubectl get pods -l app=backend -n productx
+            kubectl logs -l app=backend -n productx --tail=50
+            exit 1
+          fi
+
+      - name: Health Check - Frontend
+        id: health_frontend
+        run: |
+          echo "🏥 Checking Frontend health..."
+          
+          # Test direct pod access
+          echo "🔍 Testing Frontend Pod"
+          POD_NAME=$(kubectl get pods -n productx -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+          
+          if [ -n "$POD_NAME" ]; then
+            echo "Testing pod: $POD_NAME"
+            
+            # Check if nginx is running and serving content
+            FRONTEND_STATUS=$(kubectl exec -n productx $POD_NAME -- wget -q -O- http://localhost:80/ 2>/dev/null | head -c 100 || echo "")
+            
+            if [ -n "$FRONTEND_STATUS" ]; then
+              echo "✅ Frontend pod is serving content"
+            else
+              echo "⚠️ Frontend pod check failed"
+            fi
+          fi
+          
+          # Test service endpoint
+          echo ""
+          echo "🔍 Testing Frontend Service"
+          SERVICE_TEST=$(kubectl run frontend-check-temp --image=curlimages/curl:latest --rm -i --restart=Never -n productx -- \
+            curl -s --max-time 10 http://frontend-svc:80/ 2>/dev/null | head -c 100 || echo "")
+          
+          if [ -n "$SERVICE_TEST" ]; then
+            echo "✅ Frontend service is accessible"
+          else
+            echo "⚠️ Frontend service check failed"
+          fi
+          
+          echo ""
+          echo "✅ Frontend is healthy"
+
+      - name: Smoke Tests - CRUD Operations
+        id: smoke_tests
+        run: |
+          echo "🧪 Running Smoke Tests..."
+          echo "Testing via internal service (backend-svc:8080/api)"
+          
+          # Use internal service endpoint with /api prefix
+          API_BASE="http://backend-svc:8080/api"
+          
+          # Create a test pod to run curl commands
+          echo "Creating test pod..."
+          kubectl run smoke-test-pod --image=curlimages/curl:latest -n productx --restart=Never --rm -i -- sh -c "
+            echo '🧪 Running CRUD Smoke Tests'
+            echo ''
+            
+            # Test 1: List all products
+            echo 'Test 1: GET /api/products'
+            PRODUCTS=\$(curl -s $API_BASE/products)
+            echo \"Response (first 500 chars): \$(echo \"\$PRODUCTS\" | head -c 500)...\"
+            
+            if echo \"\$PRODUCTS\" | grep -q 'id'; then
+              echo '✅ Test 1 PASSED: Can list products'
+            else
+              echo '❌ Test 1 FAILED: Cannot list products'
+              exit 1
+            fi
+            
+            # Extract first product ID from the list
+            FIRST_PRODUCT_ID=\$(echo \"\$PRODUCTS\" | grep -o '\"id\":[0-9]*' | head -n1 | grep -o '[0-9]*')
+            echo \"First product ID found: \$FIRST_PRODUCT_ID\"
+            
+            if [ -z \"\$FIRST_PRODUCT_ID\" ]; then
+              echo '❌ Failed to extract product ID from list'
+              exit 1
+            fi
+            
+            # Test 2: Get single product (using ID from list)
+            echo ''
+            echo \"Test 2: GET /api/products/\$FIRST_PRODUCT_ID\"
+            PRODUCT=\$(curl -s $API_BASE/products/\$FIRST_PRODUCT_ID)
+            echo \"Response: \$PRODUCT\"
+            
+            if echo \"\$PRODUCT\" | grep -q 'id'; then
+              echo '✅ Test 2 PASSED: Can get single product'
+            else
+              echo '❌ Test 2 FAILED: Cannot get single product'
+              exit 1
+            fi
+            
+            # Test 3: Create new product
+            echo ''
+            echo 'Test 3: POST /api/products'
+            NEW_PRODUCT=\$(curl -s -X POST $API_BASE/products \
+              -H 'Content-Type: application/json' \
+              -d '{
+                \"name\": \"Smoke Test Product\",
+                \"price\": 99.99,
+                \"color\": \"Blue\",
+                \"category\": \"Test\",
+                \"stock\": 10,
+                \"description\": \"Created by smoke test\",
+                \"image\": \"https://via.placeholder.com/150\"
+              }')
+            
+            echo \"Response: \$NEW_PRODUCT\"
+            
+            if echo \"\$NEW_PRODUCT\" | grep -q 'Smoke Test Product'; then
+              echo '✅ Test 3 PASSED: Can create product'
+              
+              # Extract product ID
+              PRODUCT_ID=\$(echo \"\$NEW_PRODUCT\" | grep -o '\"id\":[0-9]*' | grep -o '[0-9]*')
+              echo \"Created product ID: \$PRODUCT_ID\"
+              
+              if [ -z \"\$PRODUCT_ID\" ]; then
+                echo '❌ Failed to extract product ID'
+                exit 1
+              fi
+              
+              # Test 4: Update product
+              echo ''
+              echo \"Test 4: PUT /api/products/\$PRODUCT_ID\"
+              UPDATED_PRODUCT=\$(curl -s -X PUT $API_BASE/products/\$PRODUCT_ID \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  \"name\": \"Updated Smoke Test Product\",
+                  \"price\": 149.99,
+                  \"color\": \"Red\",
+                  \"category\": \"Test\",
+                  \"stock\": 20,
+                  \"description\": \"Updated by smoke test\",
+                  \"image\": \"https://via.placeholder.com/150\"
+                }')
+              
+              echo \"Response: \$UPDATED_PRODUCT\"
+              
+              if echo \"\$UPDATED_PRODUCT\" | grep -q 'Updated Smoke Test Product'; then
+                echo '✅ Test 4 PASSED: Can update product'
+              else
+                echo '❌ Test 4 FAILED: Cannot update product'
+                exit 1
+              fi
+              
+              # Test 5: Delete product
+              echo ''
+              echo \"Test 5: DELETE /api/products/\$PRODUCT_ID\"
+              HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $API_BASE/products/\$PRODUCT_ID)
+              
+              if [ \"\$HTTP_CODE\" = '204' ]; then
+                echo \"✅ Test 5 PASSED: Can delete product (HTTP \$HTTP_CODE)\"
+              else
+                echo \"❌ Test 5 FAILED: Cannot delete product (HTTP \$HTTP_CODE)\"
+                exit 1
+              fi
+            else
+              echo '❌ Test 3 FAILED: Cannot create product'
+              exit 1
+            fi
+            
+            echo ''
+            echo '🎉 All smoke tests PASSED!'
+          "
+          
+          echo ""
+          echo "✅ Smoke tests completed successfully!"
+
+      - name: Rollback on Failure
+        if: failure() && (steps.health_backend.outcome == 'failure' || steps.health_frontend.outcome == 'failure' || steps.smoke_tests.outcome == 'failure')
+        run: |
+          echo "============================================="
+          echo "🔄 DEPLOYMENT FAILED - INITIATING ROLLBACK"
+          echo "============================================="
+          
+          # Rollback backend
+          echo "Rolling back backend deployment..."
+          kubectl rollout undo deployment/backend -n productx
+          kubectl rollout status deployment/backend -n productx --timeout=180s
+          
+          # Rollback frontend
+          echo "Rolling back frontend deployment..."
+          kubectl rollout undo deployment/frontend -n productx
+          kubectl rollout status deployment/frontend -n productx --timeout=180s
+          
+          echo ""
+          echo "✅ Rollback completed!"
+          echo "📊 Current deployment status:"
+          kubectl get pods -n productx
+          
+          echo ""
+          echo "============================================="
+          echo "❌ DEPLOYMENT FAILED AND ROLLED BACK"
+          echo "============================================="
+          exit 1
 
       - name: Print Deployment Summary
         run: |

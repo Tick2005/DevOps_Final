@@ -8,3 +8,12 @@ metadata:
   labels:
     app.kubernetes.io/name: productx
     environment: production
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: productx-staging
+  labels:
+    app.kubernetes.io/name: productx
+    environment: staging

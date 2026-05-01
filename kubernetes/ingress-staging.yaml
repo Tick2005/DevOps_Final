@@ -1,22 +1,22 @@
 # =============================================================================
-# INGRESS.YAML - Route traffic for ProductX
+# INGRESS-STAGING.YAML - Staging Environment Ingress with Dedicated ALB
 # =============================================================================
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: app-ingress
-  namespace: productx
+  name: staging-ingress
+  namespace: productx-staging
   annotations:
-    # ALB Configuration - Production ALB
-    alb.ingress.kubernetes.io/group.name: productx-production-alb
+    # ALB Configuration - Separate ALB for Staging
+    alb.ingress.kubernetes.io/group.name: productx-staging-alb
     alb.ingress.kubernetes.io/scheme: internet-facing
     alb.ingress.kubernetes.io/target-type: ip
     
     # Listeners: HTTP and HTTPS
     alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
     
-    # ACM Certificate ARN for Production - Will be replaced by workflow
-    alb.ingress.kubernetes.io/certificate-arn: PRODUCTION_CERTIFICATE_ARN
+    # ACM Certificate ARN for Staging - Will be replaced by workflow
+    alb.ingress.kubernetes.io/certificate-arn: STAGING_CERTIFICATE_ARN
     
     # SSL Policy
     alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
@@ -42,14 +42,14 @@ metadata:
     # Backend protocol
     alb.ingress.kubernetes.io/backend-protocol: HTTP
     
-    # Tags for Production ALB
-    alb.ingress.kubernetes.io/tags: Environment=production,Purpose=production-app
+    # Tags for Staging ALB
+    alb.ingress.kubernetes.io/tags: Environment=staging,Purpose=staging-app
 
 spec:
   ingressClassName: alb
   rules:
-    # Main rule for domain - handles HTTPS traffic
-    - host: PLACEHOLDER_DOMAIN
+    # Staging domain - handles HTTPS traffic
+    - host: staging.PLACEHOLDER_DOMAIN
       http:
         paths:
           # Frontend - root path
@@ -70,7 +70,7 @@ spec:
                 port:
                   number: 8080
     
-    # Redirect rule for HTTP traffic (no host specified = catch all HTTP)
+    # Redirect rule for HTTP traffic
     - http:
         paths:
           - path: /
