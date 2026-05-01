@@ -369,6 +369,13 @@ tbody tr:nth-child(even) {
   font-size: 0.85rem;
 }
 
+.upload-hint {
+  color: #7a8ba8;
+  font-size: 0.75rem;
+  font-style: italic;
+  margin-top: 0.35rem;
+}
+
 .image-dropzone.dragging {
   border-color: #0f62fe;
   background: #eef4ff;

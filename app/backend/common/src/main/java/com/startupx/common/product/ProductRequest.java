@@ -7,24 +7,24 @@ import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
 
 public class ProductRequest {
-  @NotBlank(message = "name is required")
+  @NotBlank(message = "Product name is required")
   private String name;
 
-  @NotNull(message = "price is required")
-  @DecimalMin(value = "0.01", message = "price must be greater than 0")
+  @NotNull(message = "Price is required")
+  @DecimalMin(value = "0.01", message = "Price must be greater than 0")
   private Double price;
 
-  @NotBlank(message = "color is required")
+  @NotBlank(message = "Color is required")
   private String color;
 
   private String category;
 
-  @Min(value = 0, message = "stock cannot be negative")
+  @Min(value = 0, message = "Stock cannot be negative")
   private Long stock;
 
   private String description;
-  
-  @Size(max = 100000, message = "image data too large (max 100KB)")
+
+  @Size(max = 100000, message = "Image file is too large. Maximum size is 100KB. Please use a smaller or compressed image.")
   private String image;
 
   public String getName() {
