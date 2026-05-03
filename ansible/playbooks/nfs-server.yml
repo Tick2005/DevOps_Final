@@ -22,6 +22,10 @@
           - nfs-common
         state: present
         update_cache: yes
+      retries: 3
+      delay: 10
+      register: result
+      until: result is succeeded
 
     - name: Create NFS export directory
       file:
