@@ -452,6 +452,29 @@ jobs:
           # Initialize Terraform
           terraform init
           
+          # Import existing resources if they exist (idempotent)
+          echo "🔍 Checking for existing resources..."
+          
+          # Check and import metrics-server if exists
+          if helm list -n kube-system | grep -q "metrics-server"; then
+            echo "⚠️ metrics-server already exists, importing..."
+            terraform import helm_release.metrics_server kube-system/metrics-server || true
+          fi
+          
+          # Check and import storage class if exists
+          if kubectl get storageclass gp3 &>/dev/null; then
+            echo "⚠️ StorageClass gp3 already exists, importing..."
+            terraform import kubernetes_storage_class_v1.gp3 gp3 || true
+          fi
+          
+          # Check and import kube-prometheus-stack if exists
+          if helm list -n monitoring | grep -q "kube-prometheus-stack"; then
+            echo "⚠️ kube-prometheus-stack already exists, importing..."
+            terraform import helm_release.kube_prometheus_stack monitoring/kube-prometheus-stack || true
+          fi
+          
+          echo "✅ Import check completed"
+          
           # Apply monitoring stack
           # Providers will use KUBECONFIG from environment
           terraform apply -auto-approve \
