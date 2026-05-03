@@ -20,6 +20,11 @@
       apt:
         upgrade: dist
         autoremove: yes
+      retries: 2
+      delay: 30
+      register: result
+      until: result is succeeded
+      ignore_errors: yes  # Don't fail if upgrade has issues
 
     - name: Install common packages
       apt:
@@ -32,7 +37,13 @@
           - net-tools
           - python3
           - python3-pip
+          - python3-dev
+          - build-essential
         state: present
+      retries: 3
+      delay: 10
+      register: result
+      until: result is succeeded
 
     - name: Set timezone to Asia/Ho_Chi_Minh
       timezone:
