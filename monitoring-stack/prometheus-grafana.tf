@@ -18,6 +18,10 @@ resource "helm_release" "kube_prometheus_stack" {
 
   create_namespace = true
   
+  # Cho phép re-use existing release
+  replace           = true
+  dependency_update = true
+  
   # Tăng timeout vì Prometheus stack khá nặng
   timeout = 900  # 15 phút
   
