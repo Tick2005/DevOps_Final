@@ -452,25 +452,55 @@ jobs:
           # Initialize Terraform
           terraform init
           
-          # Import existing resources if they exist (idempotent)
+          # Import existing resources if they exist AND not in state (idempotent)
           echo "🔍 Checking for existing resources..."
           
-          # Check and import metrics-server if exists
+          # Check and import metrics-server if exists and not in state
           if helm list -n kube-system | grep -q "metrics-server"; then
-            echo "⚠️ metrics-server already exists, importing..."
-            terraform import helm_release.metrics_server kube-system/metrics-server || true
+            if ! terraform state list | grep -q "helm_release.metrics_server"; then
+              echo "⚠️ metrics-server exists but not in state, importing..."
+              terraform import \
+                -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+                -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+                -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}" \
+                helm_release.metrics_server kube-system/metrics-server || echo "⚠️ Import failed, will try to manage anyway"
+            else
+              echo "✅ metrics-server already in state, skipping import"
+            fi
+          else
+            echo "📋 metrics-server does not exist yet"
           fi
           
-          # Check and import storage class if exists
+          # Check and import storage class if exists and not in state
           if kubectl get storageclass gp3 &>/dev/null; then
-            echo "⚠️ StorageClass gp3 already exists, importing..."
-            terraform import kubernetes_storage_class_v1.gp3 gp3 || true
+            if ! terraform state list | grep -q "kubernetes_storage_class_v1.gp3"; then
+              echo "⚠️ StorageClass gp3 exists but not in state, importing..."
+              terraform import \
+                -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+                -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+                -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}" \
+                kubernetes_storage_class_v1.gp3 gp3 || echo "⚠️ Import failed, will try to manage anyway"
+            else
+              echo "✅ StorageClass gp3 already in state, skipping import"
+            fi
+          else
+            echo "📋 StorageClass gp3 does not exist yet"
           fi
           
-          # Check and import kube-prometheus-stack if exists
+          # Check and import kube-prometheus-stack if exists and not in state
           if helm list -n monitoring | grep -q "kube-prometheus-stack"; then
-            echo "⚠️ kube-prometheus-stack already exists, importing..."
-            terraform import helm_release.kube_prometheus_stack monitoring/kube-prometheus-stack || true
+            if ! terraform state list | grep -q "helm_release.kube_prometheus_stack"; then
+              echo "⚠️ kube-prometheus-stack exists but not in state, importing..."
+              terraform import \
+                -var="grafana_admin_password=${{ secrets.GRAFANA_ADMIN_PASSWORD }}" \
+                -var="alert_email=${{ secrets.ALERT_EMAIL }}" \
+                -var="alert_email_password=${{ secrets.ALERT_EMAIL_PASSWORD }}" \
+                helm_release.kube_prometheus_stack monitoring/kube-prometheus-stack || echo "⚠️ Import failed, will try to manage anyway"
+            else
+              echo "✅ kube-prometheus-stack already in state, skipping import"
+            fi
+          else
+            echo "📋 kube-prometheus-stack does not exist yet"
           fi
           
           echo "✅ Import check completed"
