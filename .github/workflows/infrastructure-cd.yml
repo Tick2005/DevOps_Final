@@ -719,65 +719,69 @@ jobs:
           kubectl apply -f kubernetes/base/backend/hpa.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
       
-      - name: Apply Ingress
+      - name: Apply Production Ingress
         run: |
-          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
+          PROD_CERT_ARN=$(jq -r '.production_certificate_arn.value // "N/A"' outputs.json)
           
-          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            echo "✅ HTTPS enabled"
+          if [ "$PROD_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ HTTPS enabled for Production"
             cat kubernetes/ingress.yaml | \
-              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
+              sed "s|PRODUCTION_CERTIFICATE_ARN|${PROD_CERT_ARN}|g" | \
               sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
               kubectl apply -f -
           else
-            echo "⚠️ HTTP-only mode"
+            echo "⚠️ HTTP-only mode for Production"
             cat kubernetes/ingress.yaml | \
-              sed '/certificate-arn/d' | \
-              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
-              sed '/ssl-redirect/d' | \
-              kubectl apply -f -
-          fi
-      
-      - name: Patch Ingress Host for www Subdomain
-        run: |
-          echo "🔧 Patching Ingress host to support www subdomain..."
-          
-          # Patch ingress to use www.domain instead of root domain
-          if [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            kubectl patch ingress app-ingress -n productx --type='json' -p='[
-              {
-                "op": "replace",
-                "path": "/spec/rules/0/host",
-                "value": "www.${{ secrets.DOMAIN_NAME }}"
-              }
-            ]'
-            
-            echo "✅ Ingress host updated to: www.${{ secrets.DOMAIN_NAME }}"
-            
-            # Verify
-            kubectl describe ingress app-ingress -n productx | grep Host
-          else
-            echo "⚠️ No domain configured, skipping host patch"
-          fi
-      
-      - name: Apply Grafana Ingress
-        run: |
-          CERT_ARN=$(jq -r '.https_certificate_arn.value // "N/A"' outputs.json)
-          
-          if [ "$CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
-            echo "✅ Applying Grafana Ingress with HTTPS"
-            cat kubernetes/monitoring/grafana-ingress.yaml | \
-              sed "s|PLACEHOLDER_CERT_ARN|${CERT_ARN}|g" | \
-              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
-              kubectl apply -f -
-          else
-            echo "⚠️ Applying Grafana Ingress (HTTP-only mode)"
-            cat kubernetes/monitoring/grafana-ingress.yaml | \
               sed '/certificate-arn/d' | \
               sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
               sed '/ssl-redirect/d' | \
               sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
               kubectl apply -f -
+          fi
+      
+      - name: Apply Staging Ingress
+        run: |
+          STAGING_CERT_ARN=$(jq -r '.staging_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$STAGING_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Staging Ingress with HTTPS"
+            cat kubernetes/ingress-staging.yaml | \
+              sed "s|STAGING_CERTIFICATE_ARN|${STAGING_CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Staging Ingress (HTTP-only mode)"
+            cat kubernetes/ingress-staging.yaml | \
+              sed '/certificate-arn/d' | \
+              sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+              sed '/ssl-redirect/d' | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          fi
+      
+      - name: Apply Monitoring Ingress (Grafana)
+        run: |
+          MONITORING_CERT_ARN=$(jq -r '.monitoring_certificate_arn.value // "N/A"' outputs.json)
+          
+          if [ "$MONITORING_CERT_ARN" != "N/A" ] && [ -n "${{ secrets.DOMAIN_NAME }}" ]; then
+            echo "✅ Applying Monitoring Ingress with HTTPS"
+            cat kubernetes/ingress-monitoring.yaml | \
+              sed "s|MONITORING_CERTIFICATE_ARN|${MONITORING_CERT_ARN}|g" | \
+              sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+              kubectl apply -f -
+          else
+            echo "⚠️ Applying Monitoring Ingress (HTTP-only mode)"
+            # Fallback to old grafana-ingress.yaml if exists
+            if [ -f kubernetes/monitoring/grafana-ingress.yaml ]; then
+              cat kubernetes/monitoring/grafana-ingress.yaml | \
+                sed '/certificate-arn/d' | \
+                sed "s|listen-ports.*|listen-ports: '[{\"HTTP\": 80}]'|g" | \
+                sed '/ssl-redirect/d' | \
+                sed "s|PLACEHOLDER_DOMAIN|${{ secrets.DOMAIN_NAME }}|g" | \
+                kubectl apply -f -
+            else
+              echo "⚠️ Monitoring ingress file not found, skipping"
+            fi
           fi
       
       - name: Verify Resources
