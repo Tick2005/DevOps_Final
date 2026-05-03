@@ -38,7 +38,7 @@ jobs:
     
     environment:
       name: production
-      url: https://productx.online
+      url: https://tranduchuy.site
 
     steps:
       - name: Checkout Repository
@@ -311,6 +311,10 @@ jobs:
           kubectl apply -f kubernetes/base/frontend/deployment.yaml
           kubectl apply -f kubernetes/base/frontend/service.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
+          
+          # Deploy ServiceMonitor for Prometheus
+          echo "📊 Deploying ServiceMonitor for Prometheus..."
+          kubectl apply -f kubernetes/servicemonitor.yaml
           
           # Update ingress
           echo "🌐 Applying Ingress..."
