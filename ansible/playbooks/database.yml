@@ -24,13 +24,53 @@
         update_cache: yes
         cache_valid_time: 3600
 
-    - name: Install required packages
+    - name: Install prerequisites
+      apt:
+        name:
+          - gnupg2
+          - wget
+          - lsb-release
+          - ca-certificates
+        state: present
+
+    - name: Add PostgreSQL APT repository key
+      apt_key:
+        url: https://www.postgresql.org/media/keys/ACCC4CF8.asc
+        state: present
+
+    - name: Add PostgreSQL APT repository
+      apt_repository:
+        repo: "deb http://apt.postgresql.org/pub/repos/apt {{ ansible_distribution_release }}-pgdg main"
+        state: present
+        filename: pgdg
+
+    - name: Update apt cache after adding PostgreSQL repo
+      apt:
+        update_cache: yes
+
+    - name: Install PostgreSQL packages
       apt:
         name:
           - postgresql-{{ postgres_version }}
           - postgresql-contrib-{{ postgres_version }}
-          - python3-psycopg2
+          - libpq-dev
+          - python3-dev
+          - gcc
         state: present
+      retries: 3
+      delay: 10
+      register: result
+      until: result is succeeded
+
+    - name: Install psycopg2 via pip
+      pip:
+        name: psycopg2-binary
+        state: present
+        executable: pip3
+      retries: 3
+      delay: 5
+      register: result
+      until: result is succeeded
 
     - name: Ensure PostgreSQL is running
       systemd:
