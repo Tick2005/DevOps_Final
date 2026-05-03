@@ -24,7 +24,7 @@ public class ProductRequest {
 
   private String description;
   
-  @Size(max = 100000, message = "image data too large (max 100KB)")
+  @Size(max = Integer.MAX_VALUE, message = "Image is too large")
   private String image;
 
   public String getName() {
