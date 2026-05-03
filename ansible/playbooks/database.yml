@@ -55,20 +55,11 @@
           - postgresql-contrib-{{ postgres_version }}
           - libpq-dev
           - python3-dev
+          - python3-psycopg2
           - gcc
         state: present
       retries: 3
       delay: 10
-      register: result
-      until: result is succeeded
-
-    - name: Install psycopg2 via pip
-      pip:
-        name: psycopg2-binary
-        state: present
-        executable: pip3
-      retries: 3
-      delay: 5
       register: result
       until: result is succeeded
 
