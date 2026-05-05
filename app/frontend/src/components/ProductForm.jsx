@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { FALLBACK_IMAGE } from '../api/client'
 
+// Validation constants
+const MAX_FILE_SIZE_BYTES = 100 * 1024; // 100KB
+const MAX_BASE64_SIZE = 100000; // 100KB for base64 encoded string
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/jpg']
+const ALLOWED_IMAGE_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+
 const emptyForm = {
   name: '',
   price: '',
@@ -58,9 +64,47 @@ export default function ProductForm({
   function onImageFile(file) {
     if (!file) return
 
+    // Validate file type
+    if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+      setErrors(`Invalid file format. Allowed formats: ${ALLOWED_IMAGE_EXTENSIONS.join(', ')}`)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+      return
+    }
+
+    // Validate file size
+    if (file.size > MAX_FILE_SIZE_BYTES) {
+      const maxSizeMB = MAX_FILE_SIZE_BYTES / (1024 * 1024)
+      const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2)
+      setErrors(`File size (${fileSizeMB}MB) exceeds maximum allowed size of ${maxSizeMB}MB`)
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+      return
+    }
+
     const reader = new FileReader()
     reader.onload = () => {
-      setForm((prev) => ({ ...prev, image: String(reader.result || '') }))
+      const base64String = String(reader.result || '')
+      
+      // Validate base64 encoded size
+      if (base64String.length > MAX_BASE64_SIZE) {
+        setErrors(`Image data is too large after encoding. Please use a smaller or compressed image.`)
+        if (fileInputRef.current) {
+          fileInputRef.current.value = ''
+        }
+        return
+      }
+      
+      setForm((prev) => ({ ...prev, image: base64String }))
+      setErrors('') // Clear any previous errors
+    }
+    reader.onerror = () => {
+      setErrors('Failed to read file. Please try again.')
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
     }
     reader.readAsDataURL(file)
   }
@@ -77,6 +121,7 @@ export default function ProductForm({
 
   function clearImage() {
     setForm((prev) => ({ ...prev, image: '' }))
+    setErrors('') // Clear any image-related errors
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -162,6 +207,7 @@ export default function ProductForm({
         type="file"
         accept="image/*"
         onChange={onImageChange}
+        title={`Allowed formats: ${ALLOWED_IMAGE_EXTENSIONS.join(', ')} (Max ${MAX_FILE_SIZE_BYTES / (1024 * 1024)}MB)`}
       />
 
       <div className="image-upload full-width">
@@ -187,6 +233,7 @@ export default function ProductForm({
             </svg>
           </div>
           <span>Click to upload or drag image here</span>
+          <small className="upload-hint">Formats: JPEG, PNG, GIF, WebP • Max size: 100KB</small>
         </div>
         {canRemoveImage && form.image ? (
           <button type="button" className="ghost small remove-image-btn" onClick={clearImage}>Remove Image</button>
