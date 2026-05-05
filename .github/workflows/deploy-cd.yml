@@ -212,6 +212,18 @@ jobs:
           # Verify update
           UPDATED_VERSION=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.APP_VERSION}')
           echo "📋 Verified ConfigMap version: $UPDATED_VERSION"
+          
+          # IMPORTANT: Restart pods immediately to pick up new ConfigMap
+          echo "🔄 Restarting pods to pick up new version..."
+          kubectl rollout restart deployment/backend -n productx
+          kubectl rollout restart deployment/frontend -n productx
+          
+          # Wait for rollout to complete
+          echo "⏳ Waiting for pods to restart with new version..."
+          kubectl rollout status deployment/backend -n productx --timeout=300s
+          kubectl rollout status deployment/frontend -n productx --timeout=300s
+          
+          echo "✅ Pods restarted with new version"
       
       - name: Skip ConfigMap Update
         if: needs.version-management.outputs.version_changed == 'false'
@@ -441,8 +453,9 @@ jobs:
           echo "🌐 Applying Ingress..."
           kubectl apply -f kubernetes/ingress.yaml
           
-          # Force rollout to pull new images AND pick up new ConfigMap version
-          echo "🔄 Rolling out new images and configuration..."
+          # Force rollout to pull new images AND ensure ConfigMap is reloaded
+          echo "🔄 Rolling out new images..."
+          echo "📋 Deploying version: ${{ needs.version-management.outputs.new_version }}"
           kubectl rollout restart deployment/backend -n productx
           kubectl rollout restart deployment/frontend -n productx
           
@@ -450,6 +463,22 @@ jobs:
           echo "⏳ Waiting for rollout to complete..."
           kubectl rollout status deployment/backend -n productx --timeout=600s
           kubectl rollout status deployment/frontend -n productx --timeout=600s
+          
+          # Verify pods are running with correct version
+          echo ""
+          echo "🔍 Verifying version in pods..."
+          BACKEND_POD=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
+          POD_VERSION=$(kubectl exec -n productx $BACKEND_POD -- env | grep APP_VERSION | cut -d'=' -f2)
+          echo "📋 Backend pod version: $POD_VERSION"
+          
+          if [ "$POD_VERSION" != "${{ needs.version-management.outputs.new_version }}" ]; then
+            echo "⚠️ WARNING: Pod version ($POD_VERSION) does not match expected version (${{ needs.version-management.outputs.new_version }})"
+            echo "🔄 Forcing another restart to ensure ConfigMap is loaded..."
+            kubectl rollout restart deployment/backend -n productx
+            kubectl rollout restart deployment/frontend -n productx
+            kubectl rollout status deployment/backend -n productx --timeout=300s
+            kubectl rollout status deployment/frontend -n productx --timeout=300s
+          fi
           
           echo "✅ Application deployed successfully!"
           echo ""
