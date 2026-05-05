@@ -23,8 +23,8 @@ public class ProductRequest {
   private Long stock;
 
   private String description;
-
-  @Size(max = 100000, message = "Image file is too large. Maximum size is 100KB. Please use a smaller or compressed image.")
+  
+  @Size(max = Integer.MAX_VALUE, message = "Image is too large")
   private String image;
 
   public String getName() {

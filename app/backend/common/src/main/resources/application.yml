@@ -21,3 +21,34 @@ app:
   exam-tier: ${APP_EXAM_TIER:}
   version: ${APP_VERSION:v1.0.0}
 
+
+# Actuator and Metrics Configuration
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus,metrics
+      base-path: /actuator
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+    prometheus:
+      enabled: true
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+    tags:
+      application: ${spring.application.name:productx-backend}
+      namespace: ${APP_TIER:kubernetes}
+      version: ${APP_VERSION:v1.0.0}
+  health:
+    livenessState:
+      enabled: true
+    readinessState:
+      enabled: true

@@ -9,6 +9,11 @@ resource "helm_release" "metrics_server" {
   namespace  = "kube-system"
   version    = "3.12.0"
 
+  # Cho phép re-use existing release
+  replace           = true
+  create_namespace  = false
+  dependency_update = true
+
   set {
     name  = "args[0]"
     value = "--kubelet-insecure-tls"
@@ -37,5 +42,12 @@ resource "helm_release" "metrics_server" {
   set {
     name  = "resources.limits.memory"
     value = "400Mi"
+  }
+
+  lifecycle {
+    ignore_changes = [
+      # Ignore changes to these fields to prevent unnecessary updates
+      version,
+    ]
   }
 }

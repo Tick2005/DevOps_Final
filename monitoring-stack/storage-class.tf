@@ -20,4 +20,13 @@ resource "kubernetes_storage_class_v1" "gp3" {
     encrypted = "true"
     fsType    = "ext4"
   }
+
+  lifecycle {
+    # Prevent destruction if already exists
+    prevent_destroy = false
+    ignore_changes = [
+      # Ignore changes to annotations to prevent conflicts
+      metadata[0].annotations,
+    ]
+  }
 }

@@ -29,6 +29,143 @@ env:
 
 jobs:
   # ===========================================================================
+  # JOB: GET AND INCREMENT VERSION
+  # ===========================================================================
+  version-management:
+    name: Version Management
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    
+    outputs:
+      new_version: ${{ steps.increment.outputs.new_version }}
+      previous_version: ${{ steps.increment.outputs.previous_version }}
+      version_changed: ${{ steps.increment.outputs.version_changed }}
+    
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history to check file changes
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+      
+      - name: Configure kubectl
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+      
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history to check file changes
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.ref || github.event.workflow_run.head_sha }}
+      
+      - name: Check if App Files Changed
+        id: check_changes
+        run: |
+          echo "🔍 Checking if app files have changed..."
+          
+          # Get the commit SHA
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            COMMIT_SHA="${{ github.sha }}"
+          else
+            COMMIT_SHA="${{ github.event.workflow_run.head_sha }}"
+          fi
+          
+          echo "Checking commit: $COMMIT_SHA"
+          
+          # Check if this is the first commit or if app/ files changed
+          if git rev-parse HEAD~1 >/dev/null 2>&1; then
+            # Not first commit, check for changes in app/
+            CHANGED_FILES=$(git diff --name-only $COMMIT_SHA^ $COMMIT_SHA)
+            echo "Changed files:"
+            echo "$CHANGED_FILES"
+            
+            if echo "$CHANGED_FILES" | grep -q "^app/"; then
+              echo "✅ App files have changed"
+              echo "app_changed=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️ No app files changed"
+              echo "app_changed=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            # First commit, always increment
+            echo "✅ First commit, will increment version"
+            echo "app_changed=true" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Get Current Version and Increment
+        id: increment
+        run: |
+          echo "🔍 Getting current version from ConfigMap..."
+          
+          # Get current version from ConfigMap (default to v1.0.0 if not exists)
+          CURRENT_VERSION=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.APP_VERSION}' 2>/dev/null || echo "v1.0.0")
+          
+          echo "📋 Current version: $CURRENT_VERSION"
+          
+          # Check if app files changed
+          APP_CHANGED="${{ steps.check_changes.outputs.app_changed }}"
+          
+          if [ "$APP_CHANGED" == "true" ]; then
+            echo "✅ App files changed, incrementing version..."
+            
+            # Parse version (remove 'v' prefix)
+            VERSION_NUMBER=${CURRENT_VERSION#v}
+            
+            # Split version into major.minor.patch
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NUMBER"
+            
+            # Increment patch version
+            PATCH=$((PATCH + 1))
+            
+            # Create new version
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+            
+            echo "✅ New version: $NEW_VERSION"
+            
+            # Export to outputs
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "previous_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+            
+            echo ""
+            echo "============================================="
+            echo "📦 VERSION UPDATE"
+            echo "============================================="
+            echo "Previous: $CURRENT_VERSION"
+            echo "New:      $NEW_VERSION"
+            echo "Reason:   App files changed"
+            echo "============================================="
+          else
+            echo "⚠️ No app files changed, keeping current version..."
+            
+            # Keep current version
+            NEW_VERSION="$CURRENT_VERSION"
+            
+            echo "✅ Version unchanged: $NEW_VERSION"
+            
+            # Export to outputs
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "previous_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+            
+            echo ""
+            echo "============================================="
+            echo "📦 VERSION UNCHANGED"
+            echo "============================================="
+            echo "Current:  $CURRENT_VERSION"
+            echo "Reason:   No app files changed"
+            echo "============================================="
+          fi
+
+  # ===========================================================================
   # JOB: DEPLOY APPLICATION TO EKS
   # ===========================================================================
   deploy:
@@ -38,7 +175,7 @@ jobs:
     
     environment:
       name: production
-      url: https://productx.online
+      url: https://tranduchuy.site
 
     steps:
       - name: Checkout Repository
@@ -59,6 +196,40 @@ jobs:
           aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
           kubectl version --client
           kubectl cluster-info
+      
+      - name: Update ConfigMap with New Version
+        if: needs.version-management.outputs.version_changed == 'true'
+        run: |
+          echo "📝 Updating ConfigMap with new version: ${{ needs.version-management.outputs.new_version }}"
+          
+          # Update APP_VERSION in ConfigMap
+          kubectl patch configmap app-config -n productx \
+            --type merge \
+            -p '{"data":{"APP_VERSION":"${{ needs.version-management.outputs.new_version }}"}}'
+          
+          echo "✅ ConfigMap updated successfully"
+          
+          # Verify update
+          UPDATED_VERSION=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.APP_VERSION}')
+          echo "📋 Verified ConfigMap version: $UPDATED_VERSION"
+          
+          # IMPORTANT: Restart pods immediately to pick up new ConfigMap
+          echo "🔄 Restarting pods to pick up new version..."
+          kubectl rollout restart deployment/backend -n productx
+          kubectl rollout restart deployment/frontend -n productx
+          
+          # Wait for rollout to complete
+          echo "⏳ Waiting for pods to restart with new version..."
+          kubectl rollout status deployment/backend -n productx --timeout=300s
+          kubectl rollout status deployment/frontend -n productx --timeout=300s
+          
+          echo "✅ Pods restarted with new version"
+      
+      - name: Skip ConfigMap Update
+        if: needs.version-management.outputs.version_changed == 'false'
+        run: |
+          echo "⚠️ Skipping ConfigMap update (version unchanged)"
+          echo "📋 Current version: ${{ needs.version-management.outputs.new_version }}"
 
       - name: Update Deployment Images
         run: |
@@ -274,12 +445,17 @@ jobs:
           kubectl apply -f kubernetes/base/frontend/service.yaml
           kubectl apply -f kubernetes/base/frontend/hpa.yaml
           
+          # Deploy ServiceMonitor for Prometheus
+          echo "📊 Deploying ServiceMonitor for Prometheus..."
+          kubectl apply -f kubernetes/servicemonitor.yaml
+          
           # Update ingress
           echo "🌐 Applying Ingress..."
           kubectl apply -f kubernetes/ingress.yaml
           
-          # Force rollout to pull new images
+          # Force rollout to pull new images AND ensure ConfigMap is reloaded
           echo "🔄 Rolling out new images..."
+          echo "📋 Deploying version: ${{ needs.version-management.outputs.new_version }}"
           kubectl rollout restart deployment/backend -n productx
           kubectl rollout restart deployment/frontend -n productx
           
@@ -288,7 +464,28 @@ jobs:
           kubectl rollout status deployment/backend -n productx --timeout=600s
           kubectl rollout status deployment/frontend -n productx --timeout=600s
           
+          # Verify pods are running with correct version
+          echo ""
+          echo "🔍 Verifying version in pods..."
+          BACKEND_POD=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
+          POD_VERSION=$(kubectl exec -n productx $BACKEND_POD -- env | grep APP_VERSION | cut -d'=' -f2)
+          echo "📋 Backend pod version: $POD_VERSION"
+          
+          if [ "$POD_VERSION" != "${{ needs.version-management.outputs.new_version }}" ]; then
+            echo "⚠️ WARNING: Pod version ($POD_VERSION) does not match expected version (${{ needs.version-management.outputs.new_version }})"
+            echo "🔄 Forcing another restart to ensure ConfigMap is loaded..."
+            kubectl rollout restart deployment/backend -n productx
+            kubectl rollout restart deployment/frontend -n productx
+            kubectl rollout status deployment/backend -n productx --timeout=300s
+            kubectl rollout status deployment/frontend -n productx --timeout=300s
+          fi
+          
           echo "✅ Application deployed successfully!"
+          echo ""
+          echo "📋 Deployment Info:"
+          echo "  Version: ${{ needs.version-management.outputs.new_version }}"
+          echo "  Backend replicas: $(kubectl get deployment backend -n productx -o jsonpath='{.status.readyReplicas}')"
+          echo "  Frontend replicas: $(kubectl get deployment frontend -n productx -o jsonpath='{.status.readyReplicas}')"
 
       - name: Verify Deployment
         run: |
@@ -595,13 +792,21 @@ jobs:
           echo "🔄 DEPLOYMENT FAILED - INITIATING ROLLBACK"
           echo "============================================="
           
-          # Rollback backend
-          echo "Rolling back backend deployment..."
+          # Rollback ConfigMap to previous version
+          echo "📝 Rolling back ConfigMap to previous version: ${{ needs.version-management.outputs.previous_version }}"
+          kubectl patch configmap app-config -n productx \
+            --type merge \
+            -p '{"data":{"APP_VERSION":"${{ needs.version-management.outputs.previous_version }}"}}'
+          
+          echo "✅ ConfigMap rolled back to: ${{ needs.version-management.outputs.previous_version }}"
+          
+          # Rollback backend deployment
+          echo "🔄 Rolling back backend deployment..."
           kubectl rollout undo deployment/backend -n productx
           kubectl rollout status deployment/backend -n productx --timeout=180s
           
-          # Rollback frontend
-          echo "Rolling back frontend deployment..."
+          # Rollback frontend deployment
+          echo "🔄 Rolling back frontend deployment..."
           kubectl rollout undo deployment/frontend -n productx
           kubectl rollout status deployment/frontend -n productx --timeout=180s
           
@@ -610,9 +815,26 @@ jobs:
           echo "📊 Current deployment status:"
           kubectl get pods -n productx
           
+          # Verify rollback
+          echo ""
+          echo "📋 Verifying rollback..."
+          CURRENT_VERSION=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.APP_VERSION}')
+          echo "Current version after rollback: $CURRENT_VERSION"
+          
+          # Get backend image after rollback
+          BACKEND_IMAGE=$(kubectl get deployment backend -n productx -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Backend image after rollback: $BACKEND_IMAGE"
+          
+          # Get frontend image after rollback
+          FRONTEND_IMAGE=$(kubectl get deployment frontend -n productx -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Frontend image after rollback: $FRONTEND_IMAGE"
+          
           echo ""
           echo "============================================="
           echo "❌ DEPLOYMENT FAILED AND ROLLED BACK"
+          echo "============================================="
+          echo "Version rolled back: ${{ needs.version-management.outputs.new_version }} → ${{ needs.version-management.outputs.previous_version }}"
+          echo "Deployments rolled back to previous revision"
           echo "============================================="
           exit 1
 
@@ -636,6 +858,7 @@ jobs:
           echo "============================================="
           echo "Trigger: $TRIGGER_TYPE"
           echo "$TRIGGER_INFO"
+          echo "Version: ${{ needs.version-management.outputs.previous_version }} → ${{ needs.version-management.outputs.new_version }}"
           echo "Backend Image: ${{ env.DOCKER_USERNAME }}/productx-backend:${IMAGE_TAG}"
           echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/productx-frontend:${IMAGE_TAG}"
           echo "EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
