@@ -83,7 +83,7 @@ jobs:
           # Check if this is the first commit or if app/ files changed
           if git rev-parse HEAD~1 >/dev/null 2>&1; then
             # Not first commit, check for changes in app/
-            CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+            CHANGED_FILES=$(git diff --name-only $COMMIT_SHA^ $COMMIT_SHA)
             echo "Changed files:"
             echo "$CHANGED_FILES"
             
