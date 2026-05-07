@@ -835,21 +835,53 @@ jobs:
           UPDATED_VERSION=$(kubectl get configmap app-config -n "$TARGET_NAMESPACE" -o jsonpath='{.data.APP_VERSION}')
           echo "📋 Verified ConfigMap version: $UPDATED_VERSION"
 
+          recover_rollout() {
+            local deploy="$1"
+            local ns="$2"
+
+            echo "⚠️ Rollout failed for $deploy in $ns"
+            echo "🔍 Collecting diagnostics..."
+            kubectl get pods -n "$ns" -l app="$deploy" -o wide || true
+            kubectl describe deployment "$deploy" -n "$ns" || true
+            kubectl get events -n "$ns" --sort-by=.metadata.creationTimestamp | tail -n 30 || true
+
+            if [ "$deploy" = "backend" ]; then
+              echo "🛠️ Quick recovery: scale down backend to reduce DB connections"
+              if kubectl get hpa "${deploy}-hpa" -n "$ns" >/dev/null 2>&1; then
+                kubectl patch hpa "${deploy}-hpa" -n "$ns" -p '{"spec":{"maxReplicas":4}}' || true
+              fi
+              kubectl scale deployment/"$deploy" -n "$ns" --replicas=2 || true
+            fi
+
+            echo "🛠️ Quick recovery: rollback deployment"
+            kubectl rollout undo deployment/"$deploy" -n "$ns" || true
+            kubectl rollout status deployment/"$deploy" -n "$ns" --timeout=300s
+          }
+
           echo "🔄 Restarting pods to pick up new version..."
+          FAILED=0
           for DEPLOY in backend frontend; do
             if kubectl get deployment "$DEPLOY" -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
-              kubectl rollout restart deployment/"$DEPLOY" -n "$TARGET_NAMESPACE"
+              if ! kubectl rollout restart deployment/"$DEPLOY" -n "$TARGET_NAMESPACE"; then
+                echo "❌ Failed to restart $DEPLOY"
+                FAILED=1
+                continue
+              fi
+
+              if ! kubectl rollout status deployment/"$DEPLOY" -n "$TARGET_NAMESPACE" --timeout=300s; then
+                if ! recover_rollout "$DEPLOY" "$TARGET_NAMESPACE"; then
+                  FAILED=1
+                fi
+              fi
             else
               echo "⚠️ Deployment $DEPLOY not found in $TARGET_NAMESPACE, skipping restart"
             fi
           done
 
-          echo "⏳ Waiting for pods to restart with new version..."
-          for DEPLOY in backend frontend; do
-            if kubectl get deployment "$DEPLOY" -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
-              kubectl rollout status deployment/"$DEPLOY" -n "$TARGET_NAMESPACE" --timeout=300s
-            fi
-          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Rollout failed after quick recovery"
+            exit 1
+          fi
 
           echo "✅ ConfigMap update step completed"
 
@@ -1054,12 +1086,54 @@ jobs:
 
           echo "🔄 Rolling out new images..."
           echo "📋 Deploying version: ${{ needs.version-management.outputs.new_version }}"
-          kubectl rollout restart deployment/backend -n productx
-          kubectl rollout restart deployment/frontend -n productx
+          TARGET_NAMESPACE="${{ env.PROD_NAMESPACE }}"
 
-          echo "⏳ Waiting for rollout to complete..."
-          kubectl rollout status deployment/backend -n productx --timeout=600s
-          kubectl rollout status deployment/frontend -n productx --timeout=600s
+          recover_rollout() {
+            local deploy="$1"
+            local ns="$2"
+
+            echo "⚠️ Rollout failed for $deploy in $ns"
+            echo "🔍 Collecting diagnostics..."
+            kubectl get pods -n "$ns" -l app="$deploy" -o wide || true
+            kubectl describe deployment "$deploy" -n "$ns" || true
+            kubectl get events -n "$ns" --sort-by=.metadata.creationTimestamp | tail -n 30 || true
+
+            if [ "$deploy" = "backend" ]; then
+              echo "🛠️ Quick recovery: scale down backend to reduce DB connections"
+              if kubectl get hpa "${deploy}-hpa" -n "$ns" >/dev/null 2>&1; then
+                kubectl patch hpa "${deploy}-hpa" -n "$ns" -p '{"spec":{"maxReplicas":4}}' || true
+              fi
+              kubectl scale deployment/"$deploy" -n "$ns" --replicas=2 || true
+            fi
+
+            echo "🛠️ Quick recovery: rollback deployment"
+            kubectl rollout undo deployment/"$deploy" -n "$ns" || true
+            kubectl rollout status deployment/"$deploy" -n "$ns" --timeout=600s
+          }
+
+          FAILED=0
+          for DEPLOY in backend frontend; do
+            if kubectl get deployment "$DEPLOY" -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
+              if ! kubectl rollout restart deployment/"$DEPLOY" -n "$TARGET_NAMESPACE"; then
+                echo "❌ Failed to restart $DEPLOY"
+                FAILED=1
+                continue
+              fi
+
+              if ! kubectl rollout status deployment/"$DEPLOY" -n "$TARGET_NAMESPACE" --timeout=600s; then
+                if ! recover_rollout "$DEPLOY" "$TARGET_NAMESPACE"; then
+                  FAILED=1
+                fi
+              fi
+            else
+              echo "⚠️ Deployment $DEPLOY not found in $TARGET_NAMESPACE, skipping restart"
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Rollout failed after quick recovery"
+            exit 1
+          fi
 
           echo ""
           echo "🔍 Verifying version in pods..."
