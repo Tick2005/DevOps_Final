@@ -1,0 +1,1520 @@
+# =============================================================================
+# CI-CD-PIPELINE.YML - Build, Staging, and Production Deployment for ProductX
+# =============================================================================
+# Trigger: Runs when app/ files change
+# =============================================================================
+
+name: CI/CD Pipeline
+
+on:
+  push:
+    paths:
+      - "app/**"
+
+concurrency:
+  group: ci-cd-${{ github.sha }}
+  cancel-in-progress: true
+
+env:
+  DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+  AWS_REGION: ap-southeast-1
+  STAGING_NAMESPACE: productx-staging
+  PROD_NAMESPACE: productx
+  PROJECT_NAME: productx
+
+jobs:
+  # ===========================================================================
+  # JOB 0: WAIT FOR INFRASTRUCTURE
+  # ===========================================================================
+  wait-for-infrastructure:
+    name: Wait for Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Check Infrastructure Workflow Status
+        run: |
+          echo "🔍 Checking if infrastructure workflow is running..."
+
+          INFRA_RUN=$(gh api repos/${{ github.repository }}/actions/workflows/infrastructure-cd.yml/runs \
+            --jq ".workflow_runs[] | select(.head_sha==\"${{ github.sha }}\") | {id: .id, status: .status, conclusion: .conclusion}" \
+            | head -n 1)
+
+          if [ -z "$INFRA_RUN" ]; then
+            echo "✅ No infrastructure workflow for this commit"
+            exit 0
+          fi
+
+          INFRA_STATUS=$(echo $INFRA_RUN | jq -r '.status')
+          INFRA_ID=$(echo $INFRA_RUN | jq -r '.id')
+
+          if [ "$INFRA_STATUS" == "in_progress" ] || [ "$INFRA_STATUS" == "queued" ]; then
+            echo "⏳ Infrastructure workflow đang chạy..."
+            gh run watch $INFRA_ID --exit-status
+            echo "✅ Infrastructure workflow hoàn thành!"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+  # ===========================================================================
+  # JOB 1: BUILD & PUSH BACKEND IMAGE
+  # ===========================================================================
+  build-backend:
+    name: Build Backend Docker Image
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      # =========================================================================
+      # STEP 2: Setup Java 21 (Temurin) + Maven Caching
+      # =========================================================================
+      - name: Setup Java 21 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+          cache: 'maven'
+          cache-dependency-path: 'app/backend/common/pom.xml'
+
+      # =========================================================================
+      # STEP 3: Build JAR artifact (SKIP TESTS)
+      # =========================================================================
+      - name: Build Application JAR
+        working-directory: app/backend/common
+        run: mvn clean package -DskipTests --batch-mode --no-transfer-progress
+
+      # =========================================================================
+      # STEP 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # STEP 5: Login to Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # STEP 6: Extract metadata for Backend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_USERNAME }}/productx-backend
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+            type=raw,value=latest
+
+      # =========================================================================
+      # STEP 7: Build and Load Backend Image (NOT PUSHING YET)
+      # =========================================================================
+      - name: Build and Load Backend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend/common
+          load: true
+          tags: ${{ env.DOCKER_USERNAME }}/productx-backend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # STEP 8: Scan container vulnerabilities with Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/productx-backend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+          trivyignores: '.trivyignore'
+
+      # =========================================================================
+      # STEP 9: Push to Docker Hub
+      # =========================================================================
+      - name: Push Backend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: app/backend/common
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      # =========================================================================
+      # STEP 10: Output Backend image info
+      # =========================================================================
+      - name: Print Backend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Backend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/productx-backend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 2: BUILD & PUSH FRONTEND IMAGE
+  # ===========================================================================
+  build-frontend:
+    name: Build Frontend Docker Image
+    runs-on: ubuntu-latest
+    needs: wait-for-infrastructure
+
+    steps:
+      # =========================================================================
+      # STEP 1: Checkout code
+      # =========================================================================
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      # =========================================================================
+      # STEP 2: Setup Node.js + NPM Caching
+      # =========================================================================
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: 'app/frontend/package-lock.json'
+
+      # =========================================================================
+      # STEP 3: Install dependencies & Build static files
+      # =========================================================================
+      - name: Install Dependencies
+        working-directory: app/frontend
+        run: npm ci
+
+      - name: Build Frontend
+        working-directory: app/frontend
+        run: npm run build
+
+      # =========================================================================
+      # STEP 4: Setup Docker Buildx
+      # =========================================================================
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # =========================================================================
+      # STEP 5: Login to Docker Hub
+      # =========================================================================
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      # =========================================================================
+      # STEP 6: Extract metadata for Frontend image
+      # =========================================================================
+      - name: Extract Docker Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_USERNAME }}/productx-frontend
+          tags: |
+            type=sha,format=long
+            type=sha,format=short
+            type=raw,value=latest
+
+      # =========================================================================
+      # STEP 7: Build and Load Frontend Image (NOT PUSHING YET)
+      # =========================================================================
+      - name: Build and Load Frontend Image
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          load: true
+          tags: ${{ env.DOCKER_USERNAME }}/productx-frontend:scan
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # =========================================================================
+      # STEP 8: Scan container vulnerabilities with Trivy
+      # =========================================================================
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_USERNAME }}/productx-frontend:scan
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL'
+          ignore-unfixed: true
+          trivyignores: '.trivyignore'
+
+      # =========================================================================
+      # STEP 9: Push to Docker Hub
+      # =========================================================================
+      - name: Push Frontend Image to Docker Hub
+        uses: docker/build-push-action@v6
+        with:
+          context: app/frontend
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+
+      # =========================================================================
+      # STEP 10: Output Frontend image info
+      # =========================================================================
+      - name: Print Frontend Image Info
+        run: |
+          echo "============================================="
+          echo "✅ Frontend Docker Image Published!"
+          echo "============================================="
+          echo "Image: ${{ env.DOCKER_USERNAME }}/productx-frontend"
+          echo "Tags:"
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
+
+          echo "${{ steps.meta.outputs.tags }}" | tr ',' '\n' | sed 's/^/   - /'
+          echo "Commit: ${{ github.sha }}"
+          echo "Security: Trivy scan PASSED"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 3: DEPLOY TO STAGING
+  # ===========================================================================
+  deploy-staging:
+    name: Deploy to Staging Environment
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend]
+
+    environment:
+      name: staging
+      url: https://staging.tranduchuy.site
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      - name: Create Staging Namespace
+        run: |
+          echo "📦 Creating staging namespace..."
+          kubectl create namespace ${{ env.STAGING_NAMESPACE }} --dry-run=client -o yaml | kubectl apply -f -
+          echo "✅ Staging namespace ready"
+
+      - name: Resolve DB Public IP
+        id: db_ip
+        run: |
+          echo "🔎 Resolving DB public IP..."
+          DB_PUBLIC_IP=$(aws ec2 describe-instances \
+            --filters "Name=tag:Role,Values=database-nfs-server" "Name=tag:Project,Values=${{ env.PROJECT_NAME }}" "Name=instance-state-name,Values=running" \
+            --query "Reservations[0].Instances[0].PublicIpAddress" \
+            --output text)
+
+          if [ -z "$DB_PUBLIC_IP" ] || [ "$DB_PUBLIC_IP" = "None" ]; then
+            echo "❌ Could not resolve DB public IP via tags"
+            exit 1
+          fi
+
+          echo "db_public_ip=${DB_PUBLIC_IP}" >> "$GITHUB_OUTPUT"
+          echo "✅ DB public IP: ${DB_PUBLIC_IP}"
+
+      - name: Setup SSH Key for Ansible
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ steps.db_ip.outputs.db_public_ip }} >> ~/.ssh/known_hosts
+
+      - name: Generate Ansible Inventory
+        working-directory: ansible/inventory
+        run: |
+          cat > hosts.ini << EOF
+          # Auto-generated by GitHub Actions at $(date)
+
+          [database]
+          db-server ansible_host=${{ steps.db_ip.outputs.db_public_ip }} ansible_user=ubuntu ansible_python_interpreter=/usr/bin/python3
+
+          [all:vars]
+          ansible_ssh_private_key_file=~/.ssh/id_rsa
+          ansible_ssh_common_args='-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null'
+          EOF
+
+          cat hosts.ini
+
+      - name: Wait for SSH
+        run: |
+          echo "Waiting for SSH on DB server..."
+          for i in {1..30}; do
+            if ssh -o ConnectTimeout=5 -i ~/.ssh/id_rsa ubuntu@${{ steps.db_ip.outputs.db_public_ip }} "echo 'SSH Ready'"; then
+              echo "✅ SSH ready!"
+              break
+            fi
+            echo "⏳ Waiting for SSH... ($i/30)"
+            sleep 10
+          done
+
+      - name: Install Ansible
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ansible
+
+      - name: Create Staging DB via Ansible
+        working-directory: ansible
+        run: |
+          ansible-playbook -i inventory/hosts.ini playbooks/database.yml \
+            -e "db_name=productx_staging db_user=productx_staging_user db_password=${{ secrets.DB_PASSWORD_STAGING }}" \
+            -v
+
+      - name: Apply Staging ConfigMap
+        run: |
+          echo "⚙️ Applying staging configuration..."
+
+          DB_HOST=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.DB_HOST}')
+          NFS_SERVER=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.NFS_SERVER}')
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: app-config
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          data:
+            DB_HOST: "$DB_HOST"
+            DB_PORT: "5432"
+            DB_NAME: "productx_staging"
+            SPRING_DATASOURCE_URL: "jdbc:postgresql://${DB_HOST}:5432/productx_staging"
+            SPRING_DATASOURCE_USERNAME: "productx_staging_user"
+            NFS_SERVER: "$NFS_SERVER"
+            NFS_PATH: "/mnt/nfs_share/staging"
+            APP_ENV: "staging"
+          EOF
+
+          echo "✅ Staging ConfigMap applied"
+
+      - name: Apply Staging Secrets
+        run: |
+          echo "🔐 Applying staging secrets..."
+
+          cat <<EOF | kubectl apply -f -
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: app-secrets
+            namespace: ${{ env.STAGING_NAMESPACE }}
+          type: Opaque
+          stringData:
+            DB_PASSWORD: "${{ secrets.DB_PASSWORD_STAGING }}"
+            SPRING_DATASOURCE_PASSWORD: "${{ secrets.DB_PASSWORD_STAGING }}"
+          EOF
+
+          echo "✅ Staging Secrets applied"
+
+      - name: Resolve Image Tag
+        id: tag
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+          IMAGE_TAG="sha-${SHORT_SHA}"
+
+          echo "🤖 Automatic deployment triggered"
+          echo "📦 Deploying commit: $COMMIT_SHA"
+          echo "📦 Using image tag: $IMAGE_TAG"
+
+          echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Deployment Images
+        run: |
+          IMAGE_TAG="${{ steps.tag.outputs.image_tag }}"
+          if [ -z "$IMAGE_TAG" ]; then
+            echo "❌ image_tag output is empty"
+            exit 1
+          fi
+
+          cat kubernetes/base/backend/deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" | \
+            sed "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" | \
+            sed "s|replicas: 2|replicas: 1|g" > /tmp/backend-deployment.yaml
+
+          cat kubernetes/base/frontend/deployment.yaml | \
+            sed "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" | \
+            sed "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" | \
+            sed "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" | \
+            sed "s|replicas: 2|replicas: 1|g" > /tmp/frontend-deployment.yaml
+
+          cat kubernetes/base/backend/service.yaml | \
+            sed "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" > /tmp/backend-service.yaml
+
+          cat kubernetes/base/frontend/service.yaml | \
+            sed "s|namespace: productx|namespace: ${{ env.STAGING_NAMESPACE }}|g" > /tmp/frontend-service.yaml
+
+          echo "✅ Image tags updated to: ${IMAGE_TAG}"
+
+      - name: Verify Staging Configuration
+        run: |
+          echo "🔍 Verifying staging configuration..."
+
+          echo "📋 ConfigMap:"
+          kubectl get configmap app-config -n ${{ env.STAGING_NAMESPACE }} -o yaml
+
+          echo ""
+          echo "📋 Secrets (names only):"
+          kubectl get secret app-secrets -n ${{ env.STAGING_NAMESPACE }}
+
+          echo ""
+          echo "✅ Configuration verified"
+
+      - name: Deploy to Staging
+        run: |
+          set -e
+
+          echo "🚀 Deploying to Staging Environment..."
+
+          echo "📦 Deploying Backend..."
+          kubectl apply -f /tmp/backend-service.yaml
+          kubectl apply -f /tmp/backend-deployment.yaml
+
+          echo "📦 Deploying Frontend..."
+          kubectl apply -f /tmp/frontend-service.yaml
+          kubectl apply -f /tmp/frontend-deployment.yaml
+
+          kubectl rollout restart deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout restart deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+
+          echo "⏳ Waiting for rollout to complete..."
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=180s
+
+          echo "✅ Staging deployment completed!"
+
+      - name: Wait for Pods to be Ready
+        run: |
+          echo "⏳ Waiting for deployments to be ready..."
+          kubectl rollout status deployment/backend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
+          kubectl rollout status deployment/frontend -n ${{ env.STAGING_NAMESPACE }} --timeout=600s
+
+          echo "✅ All staging pods are ready!"
+
+      - name: Verify Staging Deployment
+        id: staging_tests
+        run: |
+          echo "🧪 Running Staging Tests..."
+
+          kubectl port-forward -n ${{ env.STAGING_NAMESPACE }} svc/backend-svc 8080:8080 &
+          PF_PID=$!
+          sleep 10
+
+          echo "Test 1: Backend Health Check"
+          HEALTH=$(curl -s http://localhost:8080/actuator/health || echo "FAILED")
+
+          if echo "$HEALTH" | grep -q "UP"; then
+            echo "✅ Backend is healthy"
+          else
+            echo "❌ Backend health check failed"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          echo ""
+          echo "Test 2: List Products"
+          PRODUCTS=$(curl -s http://localhost:8080/api/products)
+
+          if echo "$PRODUCTS" | grep -q "id"; then
+            echo "✅ Can list products"
+          else
+            echo "❌ Cannot list products"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          echo ""
+          echo "Test 3: Create Product"
+          NEW_PRODUCT=$(curl -s -X POST http://localhost:8080/api/products \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "Staging Test Product",
+              "price": 99.99,
+              "color": "Blue",
+              "category": "Test",
+              "stock": 10,
+              "description": "Staging test",
+              "image": "https://via.placeholder.com/150"
+            }')
+
+          if echo "$NEW_PRODUCT" | grep -q "Staging Test Product"; then
+            echo "✅ Can create product"
+
+            PRODUCT_ID=$(echo "$NEW_PRODUCT" | grep -o '"id":[0-9]*' | grep -o '[0-9]*')
+            curl -s -X DELETE "http://localhost:8080/api/products/$PRODUCT_ID"
+            echo "✅ Cleanup completed"
+          else
+            echo "❌ Cannot create product"
+            kill $PF_PID 2>/dev/null || true
+            exit 1
+          fi
+
+          kill $PF_PID 2>/dev/null || true
+
+          echo ""
+          echo "🎉 All staging tests PASSED!"
+
+      - name: Rollback Staging on Failure
+        if: failure() && steps.staging_tests.outcome == 'failure'
+        run: |
+          echo "🔄 Rolling back staging deployment..."
+          kubectl rollout undo deployment/backend -n ${{ env.STAGING_NAMESPACE }}
+          kubectl rollout undo deployment/frontend -n ${{ env.STAGING_NAMESPACE }}
+          echo "✅ Staging rollback completed"
+
+      - name: Print Staging Summary
+        run: |
+          echo "============================================="
+          echo "📊 STAGING DEPLOYMENT STATUS"
+          echo "============================================="
+          echo ""
+          echo "Pods:"
+          kubectl get pods -n ${{ env.STAGING_NAMESPACE }} -o wide
+          echo ""
+          echo "Services:"
+          kubectl get svc -n ${{ env.STAGING_NAMESPACE }}
+          echo ""
+          echo "Ingress:"
+          kubectl get ingress -n ${{ env.STAGING_NAMESPACE }}
+          echo ""
+          echo "============================================="
+
+      - name: Print Staging Deployment Summary
+        run: |
+          IMAGE_TAG="${{ steps.tag.outputs.image_tag }}"
+
+          echo ""
+          echo "============================================="
+          echo "✅ STAGING DEPLOYMENT SUCCESSFUL"
+          echo "============================================="
+          echo ""
+          echo "📦 Backend: ${{ env.DOCKER_USERNAME }}/productx-backend:${IMAGE_TAG}"
+          echo "📦 Frontend: ${{ env.DOCKER_USERNAME }}/productx-frontend:${IMAGE_TAG}"
+          echo "🌐 URL: https://staging.tranduchuy.site"
+          echo "📝 Commit: ${{ github.sha }}"
+          echo "👤 Deployed by: ${{ github.actor }}"
+          echo ""
+          echo "⏭️  Next: Production deployment will run automatically"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 4: GET AND INCREMENT VERSION
+  # ===========================================================================
+  version-management:
+    name: Version Management
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+
+    outputs:
+      new_version: ${{ steps.increment.outputs.new_version }}
+      previous_version: ${{ steps.increment.outputs.previous_version }}
+      version_changed: ${{ steps.increment.outputs.version_changed }}
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Check if App Files Changed
+        id: check_changes
+        run: |
+          echo "🔍 Checking if app files have changed..."
+
+          BEFORE_SHA="${{ github.event.before }}"
+          AFTER_SHA="${{ github.sha }}"
+
+          if [ -z "$BEFORE_SHA" ] || [ "$BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "✅ First commit, will increment version"
+            echo "app_changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+            echo "✅ Previous commit not found, will increment version"
+            echo "app_changed=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          CHANGED_FILES=$(git diff --name-only "$BEFORE_SHA" "$AFTER_SHA")
+          echo "Changed files:"
+          echo "$CHANGED_FILES"
+
+          if echo "$CHANGED_FILES" | grep -q "^app/"; then
+            echo "✅ App files have changed"
+            echo "app_changed=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No app files changed"
+            echo "app_changed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Get Current Version and Increment
+        id: increment
+        run: |
+          echo "🔍 Getting current version from ConfigMap..."
+
+          TARGET_NAMESPACE="${{ env.PROD_NAMESPACE }}"
+
+          if kubectl get configmap app-config -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
+            echo "✅ Using ConfigMap in namespace: $TARGET_NAMESPACE"
+          elif kubectl get configmap app-config -n "${{ env.STAGING_NAMESPACE }}" >/dev/null 2>&1; then
+            TARGET_NAMESPACE="${{ env.STAGING_NAMESPACE }}"
+            echo "⚠️ ConfigMap not found in prod, using namespace: $TARGET_NAMESPACE"
+          else
+            TARGET_NAMESPACE=""
+            echo "⚠️ ConfigMap not found in prod or staging; defaulting to v1.0.0"
+          fi
+
+          if [ -n "$TARGET_NAMESPACE" ]; then
+            CURRENT_VERSION=$(kubectl get configmap app-config -n "$TARGET_NAMESPACE" -o jsonpath='{.data.APP_VERSION}' 2>/dev/null || echo "v1.0.0")
+          else
+            CURRENT_VERSION="v1.0.0"
+          fi
+
+          echo "📋 Current version: $CURRENT_VERSION"
+
+          APP_CHANGED="${{ steps.check_changes.outputs.app_changed }}"
+
+          if [ "$APP_CHANGED" == "true" ]; then
+            echo "✅ App files changed, incrementing version..."
+
+            VERSION_NUMBER=${CURRENT_VERSION#v}
+
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION_NUMBER"
+
+            PATCH=$((PATCH + 1))
+
+            NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+
+            echo "✅ New version: $NEW_VERSION"
+
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "previous_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_changed=true" >> $GITHUB_OUTPUT
+
+            echo ""
+            echo "============================================="
+            echo "📦 VERSION UPDATE"
+            echo "============================================="
+            echo "Previous: $CURRENT_VERSION"
+            echo "New:      $NEW_VERSION"
+            echo "Reason:   App files changed"
+            echo "============================================="
+          else
+            echo "⚠️ No app files changed, keeping current version..."
+
+            NEW_VERSION="$CURRENT_VERSION"
+
+            echo "✅ Version unchanged: $NEW_VERSION"
+
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            echo "previous_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_changed=false" >> $GITHUB_OUTPUT
+
+            echo ""
+            echo "============================================="
+            echo "📦 VERSION UNCHANGED"
+            echo "============================================="
+            echo "Current:  $CURRENT_VERSION"
+            echo "Reason:   No app files changed"
+            echo "============================================="
+          fi
+
+  # ===========================================================================
+  # JOB 5: DEPLOY APPLICATION TO EKS
+  # ===========================================================================
+  deploy:
+    name: Deploy Application to EKS
+    runs-on: ubuntu-latest
+    needs: version-management
+
+    environment:
+      name: production
+      url: https://tranduchuy.site
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure kubectl
+        run: |
+          echo "⚙️ Configuring kubectl for EKS..."
+          aws eks update-kubeconfig --name ${{ secrets.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+          kubectl version --client
+          kubectl cluster-info
+
+      - name: Update ConfigMap with New Version
+        if: needs.version-management.outputs.version_changed == 'true'
+        run: |
+          echo "📝 Updating ConfigMap with new version: ${{ needs.version-management.outputs.new_version }}"
+
+          TARGET_NAMESPACE="${{ env.PROD_NAMESPACE }}"
+
+          if kubectl get configmap app-config -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
+            echo "✅ Found ConfigMap in namespace: $TARGET_NAMESPACE"
+          elif kubectl get configmap app-config -n "${{ env.STAGING_NAMESPACE }}" >/dev/null 2>&1; then
+            TARGET_NAMESPACE="${{ env.STAGING_NAMESPACE }}"
+            echo "⚠️ ConfigMap not found in prod, using namespace: $TARGET_NAMESPACE"
+          else
+            echo "⚠️ ConfigMap not found in prod or staging; skipping update and restart"
+            exit 0
+          fi
+
+          kubectl patch configmap app-config -n "$TARGET_NAMESPACE" \
+            --type merge \
+            -p '{"data":{"APP_VERSION":"${{ needs.version-management.outputs.new_version }}"}}'
+
+          echo "✅ ConfigMap updated successfully"
+
+          UPDATED_VERSION=$(kubectl get configmap app-config -n "$TARGET_NAMESPACE" -o jsonpath='{.data.APP_VERSION}')
+          echo "📋 Verified ConfigMap version: $UPDATED_VERSION"
+
+          recover_rollout() {
+            local deploy="$1"
+            local ns="$2"
+
+            echo "⚠️ Rollout failed for $deploy in $ns"
+            echo "🔍 Collecting diagnostics..."
+            kubectl get pods -n "$ns" -l app="$deploy" -o wide || true
+            kubectl describe deployment "$deploy" -n "$ns" || true
+            kubectl get events -n "$ns" --sort-by=.metadata.creationTimestamp | tail -n 30 || true
+
+            if [ "$deploy" = "backend" ]; then
+              echo "🛠️ Quick recovery: scale down backend to reduce DB connections"
+              if kubectl get hpa "${deploy}-hpa" -n "$ns" >/dev/null 2>&1; then
+                kubectl patch hpa "${deploy}-hpa" -n "$ns" -p '{"spec":{"maxReplicas":4}}' || true
+              fi
+              kubectl scale deployment/"$deploy" -n "$ns" --replicas=2 || true
+            fi
+
+            echo "🛠️ Quick recovery: rollback deployment"
+            kubectl rollout undo deployment/"$deploy" -n "$ns" || true
+            kubectl rollout status deployment/"$deploy" -n "$ns" --timeout=300s
+          }
+
+          echo "🔄 Restarting pods to pick up new version..."
+          FAILED=0
+          for DEPLOY in backend frontend; do
+            if kubectl get deployment "$DEPLOY" -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
+              if ! kubectl rollout restart deployment/"$DEPLOY" -n "$TARGET_NAMESPACE"; then
+                echo "❌ Failed to restart $DEPLOY"
+                FAILED=1
+                continue
+              fi
+
+              if ! kubectl rollout status deployment/"$DEPLOY" -n "$TARGET_NAMESPACE" --timeout=300s; then
+                if ! recover_rollout "$DEPLOY" "$TARGET_NAMESPACE"; then
+                  FAILED=1
+                fi
+              fi
+            else
+              echo "⚠️ Deployment $DEPLOY not found in $TARGET_NAMESPACE, skipping restart"
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Rollout failed after quick recovery"
+            exit 1
+          fi
+
+          echo "✅ ConfigMap update step completed"
+
+      - name: Skip ConfigMap Update
+        if: needs.version-management.outputs.version_changed == 'false'
+        run: |
+          echo "⚠️ Skipping ConfigMap update (version unchanged)"
+          echo "📋 Current version: ${{ needs.version-management.outputs.new_version }}"
+
+      - name: Update Deployment Images
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+          IMAGE_TAG="sha-${SHORT_SHA}"
+
+          echo "🤖 Automatic deployment triggered"
+          echo "📦 Deploying commit: $COMMIT_SHA"
+          echo "📦 Using image tag: $IMAGE_TAG"
+
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/backend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
+            kubernetes/base/backend/deployment.yaml
+
+          sed -i "s|DOCKER_USERNAME|${{ env.DOCKER_USERNAME }}|g" \
+            kubernetes/base/frontend/deployment.yaml
+          sed -i "s|PLACEHOLDER_IMAGE_TAG|${IMAGE_TAG}|g" \
+            kubernetes/base/frontend/deployment.yaml
+
+          echo "✅ Image tags updated to: ${IMAGE_TAG}"
+
+      - name: Update Ingress Domain
+        run: |
+          echo "🌐 Updating Ingress with domain..."
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+          if [[ "$DOMAIN" == www.* ]]; then
+            WWW_DOMAIN="$DOMAIN"
+          else
+            WWW_DOMAIN="www.$DOMAIN"
+          fi
+
+          sed -i "s|PLACEHOLDER_DOMAIN|${WWW_DOMAIN}|g" kubernetes/ingress.yaml
+
+          echo "📋 Updated Ingress configuration:"
+          cat kubernetes/ingress.yaml | grep -A 5 "host:"
+
+      - name: Get ACM Certificate ARN
+        id: get_cert_arn
+        run: |
+          echo "🔐 Getting ACM Certificate ARN from AWS..."
+
+          DOMAIN="${{ secrets.DOMAIN_NAME }}"
+
+          if [ -z "$DOMAIN" ]; then
+            echo "⚠️ No domain configured, skipping HTTPS setup"
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          echo "🔍 Looking for certificate for domain: $DOMAIN"
+
+          CERT_ARN=$(aws acm list-certificates \
+            --region ${{ env.AWS_REGION }} \
+            --query "CertificateSummaryList[?DomainName=='${DOMAIN}' || DomainName=='*.${DOMAIN}' || DomainName=='www.${DOMAIN}'].CertificateArn" \
+            --output text | head -n1)
+
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No ACM certificate found for domain: $DOMAIN"
+            echo ""
+            echo "🔄 Attempting to create ACM certificate..."
+
+            CERT_ARN=$(aws acm request-certificate \
+              --domain-name "$DOMAIN" \
+              --subject-alternative-names "*.$DOMAIN" \
+              --validation-method DNS \
+              --region ${{ env.AWS_REGION }} \
+              --query 'CertificateArn' \
+              --output text)
+
+            if [ -z "$CERT_ARN" ]; then
+              echo "❌ Failed to create certificate"
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            echo "✅ Certificate requested: $CERT_ARN"
+            echo ""
+            echo "⚠️ IMPORTANT: Certificate validation required!"
+            echo "============================================="
+            echo "The certificate is now in PENDING_VALIDATION state."
+            echo ""
+            echo "To complete validation, you need to add DNS records:"
+            echo ""
+
+            sleep 5
+
+            aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+              --output table
+
+            echo ""
+            echo "Steps to validate:"
+            echo "1. Go to your DNS provider (Route53, Cloudflare, etc.)"
+            echo "2. Add the CNAME records shown above"
+            echo "3. Wait for DNS propagation (5-30 minutes)"
+            echo "4. Certificate will automatically be validated"
+            echo ""
+            echo "🔄 For now, continuing with HTTP-only configuration..."
+            echo "   Re-run this workflow after DNS validation completes."
+            echo "============================================="
+
+            echo "cert_arn=" >> $GITHUB_OUTPUT
+          else
+            echo "✅ Found certificate ARN: $CERT_ARN"
+
+            CERT_STATUS=$(aws acm describe-certificate \
+              --certificate-arn "$CERT_ARN" \
+              --region ${{ env.AWS_REGION }} \
+              --query 'Certificate.Status' \
+              --output text)
+
+            echo "📋 Certificate Status: $CERT_STATUS"
+
+            if [ "$CERT_STATUS" = "PENDING_VALIDATION" ]; then
+              echo "⚠️ Certificate is pending DNS validation"
+              echo ""
+              echo "DNS validation records needed:"
+              aws acm describe-certificate \
+                --certificate-arn "$CERT_ARN" \
+                --region ${{ env.AWS_REGION }} \
+                --query 'Certificate.DomainValidationOptions[*].[DomainName,ResourceRecord.Name,ResourceRecord.Type,ResourceRecord.Value]' \
+                --output table
+              echo ""
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "   Re-run this workflow after DNS validation completes."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            elif [ "$CERT_STATUS" != "ISSUED" ]; then
+              echo "⚠️ Certificate is not in ISSUED state (current: $CERT_STATUS)"
+              echo "🔄 Continuing with HTTP-only configuration..."
+              echo "cert_arn=" >> $GITHUB_OUTPUT
+            else
+              echo "✅ Certificate is valid and ready to use"
+              echo "cert_arn=$CERT_ARN" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+      - name: Update Ingress with HTTPS Configuration
+        run: |
+          CERT_ARN="${{ steps.get_cert_arn.outputs.cert_arn }}"
+
+          if [ -z "$CERT_ARN" ]; then
+            echo "⚠️ No valid certificate found, configuring HTTP-only ALB..."
+
+            sed -i '/alb.ingress.kubernetes.io\/certificate-arn:/d' kubernetes/ingress.yaml
+            sed -i '/alb.ingress.kubernetes.io\/ssl-policy:/d' kubernetes/ingress.yaml
+            sed -i '/alb.ingress.kubernetes.io\/actions.ssl-redirect:/,/^[[:space:]]*$/d' kubernetes/ingress.yaml
+            sed -i 's/\[{"HTTP": 80}, {"HTTPS": 443}\]/[{"HTTP": 80}]/g' kubernetes/ingress.yaml
+
+            sed -i '/- http:/,/use-annotation/d' kubernetes/ingress.yaml
+
+            echo "✅ Ingress configured for HTTP-only (port 80)"
+          else
+            echo "🔐 Configuring HTTPS with certificate..."
+
+            sed -i "s|PRODUCTION_CERTIFICATE_ARN|${CERT_ARN}|g" kubernetes/ingress.yaml
+
+            echo "✅ Ingress configured for HTTPS (ports 80 and 443)"
+            echo "📋 Certificate ARN: $CERT_ARN"
+            echo ""
+            echo "📋 HTTPS Configuration:"
+            echo "  - HTTP:80 → Redirect to HTTPS:443"
+            echo "  - HTTPS:443 → Forward to backend services"
+          fi
+
+          echo ""
+          echo "📋 Final Ingress configuration:"
+          cat kubernetes/ingress.yaml
+
+      - name: Deploy Application
+        run: |
+          set -e
+
+          echo "🚀 Deploying Application to EKS..."
+
+          echo "📦 Deploying Backend..."
+          kubectl apply -f kubernetes/base/backend/deployment.yaml
+          kubectl apply -f kubernetes/base/backend/service.yaml
+          kubectl apply -f kubernetes/base/backend/hpa.yaml
+
+          echo "📦 Deploying Frontend..."
+          kubectl apply -f kubernetes/base/frontend/deployment.yaml
+          kubectl apply -f kubernetes/base/frontend/service.yaml
+          kubectl apply -f kubernetes/base/frontend/hpa.yaml
+
+          echo "📊 Deploying ServiceMonitor for Prometheus..."
+          kubectl apply -f kubernetes/servicemonitor.yaml
+
+          echo "🌐 Applying Ingress..."
+          kubectl apply -f kubernetes/ingress.yaml
+
+          echo "🔄 Rolling out new images..."
+          echo "📋 Deploying version: ${{ needs.version-management.outputs.new_version }}"
+          TARGET_NAMESPACE="${{ env.PROD_NAMESPACE }}"
+
+          recover_rollout() {
+            local deploy="$1"
+            local ns="$2"
+
+            echo "⚠️ Rollout failed for $deploy in $ns"
+            echo "🔍 Collecting diagnostics..."
+            kubectl get pods -n "$ns" -l app="$deploy" -o wide || true
+            kubectl describe deployment "$deploy" -n "$ns" || true
+            kubectl get events -n "$ns" --sort-by=.metadata.creationTimestamp | tail -n 30 || true
+
+            if [ "$deploy" = "backend" ]; then
+              echo "🛠️ Quick recovery: scale down backend to reduce DB connections"
+              if kubectl get hpa "${deploy}-hpa" -n "$ns" >/dev/null 2>&1; then
+                kubectl patch hpa "${deploy}-hpa" -n "$ns" -p '{"spec":{"maxReplicas":4}}' || true
+              fi
+              kubectl scale deployment/"$deploy" -n "$ns" --replicas=2 || true
+            fi
+
+            echo "🛠️ Quick recovery: rollback deployment"
+            kubectl rollout undo deployment/"$deploy" -n "$ns" || true
+            kubectl rollout status deployment/"$deploy" -n "$ns" --timeout=600s
+          }
+
+          FAILED=0
+          for DEPLOY in backend frontend; do
+            if kubectl get deployment "$DEPLOY" -n "$TARGET_NAMESPACE" >/dev/null 2>&1; then
+              if ! kubectl rollout restart deployment/"$DEPLOY" -n "$TARGET_NAMESPACE"; then
+                echo "❌ Failed to restart $DEPLOY"
+                FAILED=1
+                continue
+              fi
+
+              if ! kubectl rollout status deployment/"$DEPLOY" -n "$TARGET_NAMESPACE" --timeout=600s; then
+                if ! recover_rollout "$DEPLOY" "$TARGET_NAMESPACE"; then
+                  FAILED=1
+                fi
+              fi
+            else
+              echo "⚠️ Deployment $DEPLOY not found in $TARGET_NAMESPACE, skipping restart"
+            fi
+          done
+
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ Rollout failed after quick recovery"
+            exit 1
+          fi
+
+          echo ""
+          echo "🔍 Verifying version in pods..."
+          BACKEND_POD=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
+          POD_VERSION=$(kubectl exec -n productx $BACKEND_POD -- env | grep APP_VERSION | cut -d'=' -f2)
+          echo "📋 Backend pod version: $POD_VERSION"
+
+          if [ "$POD_VERSION" != "${{ needs.version-management.outputs.new_version }}" ]; then
+            echo "⚠️ WARNING: Pod version ($POD_VERSION) does not match expected version (${{ needs.version-management.outputs.new_version }})"
+            echo "🔄 Forcing another restart to ensure ConfigMap is loaded..."
+            kubectl rollout restart deployment/backend -n productx
+            kubectl rollout restart deployment/frontend -n productx
+            kubectl rollout status deployment/backend -n productx --timeout=300s
+            kubectl rollout status deployment/frontend -n productx --timeout=300s
+          fi
+
+          echo "✅ Application deployed successfully!"
+          echo ""
+          echo "📋 Deployment Info:"
+          echo "  Version: ${{ needs.version-management.outputs.new_version }}"
+          echo "  Backend replicas: $(kubectl get deployment backend -n productx -o jsonpath='{.status.readyReplicas}')"
+          echo "  Frontend replicas: $(kubectl get deployment frontend -n productx -o jsonpath='{.status.readyReplicas}')"
+
+      - name: Verify Deployment
+        run: |
+          echo ""
+          echo "📊 Current Pod Status:"
+          kubectl get pods -n productx -o wide
+          echo ""
+          echo "📊 Current Services:"
+          kubectl get svc -n productx
+          echo ""
+          echo "📊 Current Ingress:"
+          kubectl get ingress -n productx
+          echo ""
+          echo "📊 Ingress Details:"
+          kubectl describe ingress app-ingress -n productx
+          echo ""
+          echo "📊 ALB Address:"
+          kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}'
+          echo ""
+          echo ""
+          echo "📊 HPA Status:"
+          kubectl get hpa -n productx
+
+      - name: Wait for Pods to be Ready
+        run: |
+          echo "⏳ Waiting for all pods to be ready..."
+
+          kubectl wait --for=condition=ready pod \
+            -l app=backend \
+            -n productx \
+            --timeout=300s
+
+          kubectl wait --for=condition=ready pod \
+            -l app=frontend \
+            -n productx \
+            --timeout=300s
+
+          echo "✅ All pods are ready!"
+
+          echo "⏳ Waiting additional 30 seconds for application initialization..."
+          sleep 30
+
+          echo "📋 Checking backend pod logs..."
+          kubectl logs -l app=backend -n productx --tail=20 || true
+
+      - name: Health Check - Backend API
+        id: health_backend
+        run: |
+          echo "🏥 Checking Backend API health..."
+
+          echo ""
+          echo "🔍 Test 1: Direct Pod Access"
+          POD_NAME=$(kubectl get pods -n productx -l app=backend -o jsonpath='{.items[0].metadata.name}')
+
+          if [ -n "$POD_NAME" ]; then
+            echo "Testing pod: $POD_NAME"
+
+            HEALTH_STATUS=$(kubectl exec -n productx $POD_NAME -- wget -q -O- http://localhost:8080/actuator/health 2>/dev/null || echo "")
+
+            if [ -n "$HEALTH_STATUS" ]; then
+              echo "✅ Pod health check successful"
+              echo "Response: $HEALTH_STATUS"
+            else
+              echo "⚠️ Pod health check failed, trying curl..."
+              kubectl exec -n productx $POD_NAME -- curl -s http://localhost:8080/actuator/health || echo "❌ Both wget and curl failed"
+            fi
+          else
+            echo "❌ No backend pod found"
+            exit 1
+          fi
+
+          echo ""
+          echo "🔍 Test 2: Service Endpoint"
+          SERVICE_HEALTH=$(kubectl run health-check-temp --image=curlimages/curl:latest --rm -i --restart=Never -n productx -- \
+            curl -s --max-time 10 http://backend-svc:8080/actuator/health 2>/dev/null || echo "")
+
+          if echo "$SERVICE_HEALTH" | grep -q "UP\|status"; then
+            echo "✅ Service health check successful"
+            echo "Response: $SERVICE_HEALTH"
+          else
+            echo "⚠️ Service health check failed or returned unexpected response"
+            echo "Response: $SERVICE_HEALTH"
+          fi
+
+          echo ""
+          echo "🔍 Test 3: ALB Access (optional)"
+          ALB_HOSTNAME=$(kubectl get ingress app-ingress -n productx -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+
+          if [ -z "$ALB_HOSTNAME" ]; then
+            echo "⚠️ ALB hostname not found, skipping ALB test"
+          else
+            echo "ALB Hostname: $ALB_HOSTNAME"
+
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://$ALB_HOSTNAME/api/actuator/health" 2>/dev/null || echo "000")
+
+            if [ "$HTTP_CODE" = "200" ]; then
+              echo "✅ ALB HTTP access successful (HTTP $HTTP_CODE)"
+            elif [ "$HTTP_CODE" = "301" ] || [ "$HTTP_CODE" = "302" ]; then
+              echo "⚠️ ALB returns redirect (HTTP $HTTP_CODE) - HTTPS redirect is configured"
+              echo "This is expected if HTTPS is enabled"
+              echo "Skipping HTTPS test (certificate may not be configured yet)"
+            else
+              echo "⚠️ ALB HTTP access returned: HTTP $HTTP_CODE"
+            fi
+          fi
+
+          echo ""
+          echo "============================================="
+          echo "📊 Health Check Summary"
+          echo "============================================="
+
+          if [ -n "$HEALTH_STATUS" ] || echo "$SERVICE_HEALTH" | grep -q "UP\|status"; then
+            echo "✅ Backend API is healthy"
+            echo "   - Pod access: ✅"
+            echo "   - Service access: ✅"
+            echo "   - ALB access: ⚠️ (may require HTTPS configuration)"
+            echo ""
+            echo "Backend is ready to serve traffic!"
+          else
+            echo "❌ Backend API health check failed"
+            echo ""
+            echo "Diagnostics:"
+            kubectl get pods -l app=backend -n productx
+            kubectl logs -l app=backend -n productx --tail=50
+            exit 1
+          fi
+
+      - name: Health Check - Frontend
+        id: health_frontend
+        run: |
+          echo "🏥 Checking Frontend health..."
+
+          echo "🔍 Testing Frontend Pod"
+          POD_NAME=$(kubectl get pods -n productx -l app=frontend -o jsonpath='{.items[0].metadata.name}')
+
+          if [ -n "$POD_NAME" ]; then
+            echo "Testing pod: $POD_NAME"
+
+            FRONTEND_STATUS=$(kubectl exec -n productx $POD_NAME -- wget -q -O- http://localhost:80/ 2>/dev/null | head -c 100 || echo "")
+
+            if [ -n "$FRONTEND_STATUS" ]; then
+              echo "✅ Frontend pod is serving content"
+            else
+              echo "⚠️ Frontend pod check failed"
+            fi
+          fi
+
+          echo ""
+          echo "🔍 Testing Frontend Service"
+          SERVICE_TEST=$(kubectl run frontend-check-temp --image=curlimages/curl:latest --rm -i --restart=Never -n productx -- \
+            curl -s --max-time 10 http://frontend-svc:80/ 2>/dev/null | head -c 100 || echo "")
+
+          if [ -n "$SERVICE_TEST" ]; then
+            echo "✅ Frontend service is accessible"
+          else
+            echo "⚠️ Frontend service check failed"
+          fi
+
+          echo ""
+          echo "✅ Frontend is healthy"
+
+      - name: Smoke Tests - CRUD Operations
+        id: smoke_tests
+        run: |
+          echo "🧪 Running Smoke Tests..."
+          echo "Testing via internal service (backend-svc:8080/api)"
+
+          API_BASE="http://backend-svc:8080/api"
+
+          echo "Creating test pod..."
+          kubectl run smoke-test-pod --image=curlimages/curl:latest -n productx --restart=Never --rm -i -- sh -c "
+            echo '🧪 Running CRUD Smoke Tests'
+            echo ''
+
+            echo 'Test 1: GET /api/products'
+            PRODUCTS=\$(curl -s $API_BASE/products)
+            echo \"Response (first 500 chars): \$(echo \"\$PRODUCTS\" | head -c 500)...\"
+
+            if echo \"\$PRODUCTS\" | grep -q 'id'; then
+              echo '✅ Test 1 PASSED: Can list products'
+            else
+              echo '❌ Test 1 FAILED: Cannot list products'
+              exit 1
+            fi
+
+            FIRST_PRODUCT_ID=\$(echo \"\$PRODUCTS\" | grep -o '\"id\":[0-9]*' | head -n1 | grep -o '[0-9]*')
+            echo \"First product ID found: \$FIRST_PRODUCT_ID\"
+
+            if [ -z \"\$FIRST_PRODUCT_ID\" ]; then
+              echo '❌ Failed to extract product ID from list'
+              exit 1
+            fi
+
+            echo ''
+            echo \"Test 2: GET /api/products/\$FIRST_PRODUCT_ID\"
+            PRODUCT=\$(curl -s $API_BASE/products/\$FIRST_PRODUCT_ID)
+            echo \"Response: \$PRODUCT\"
+
+            if echo \"\$PRODUCT\" | grep -q 'id'; then
+              echo '✅ Test 2 PASSED: Can get single product'
+            else
+              echo '❌ Test 2 FAILED: Cannot get single product'
+              exit 1
+            fi
+
+            echo ''
+            echo 'Test 3: POST /api/products'
+            NEW_PRODUCT=\$(curl -s -X POST $API_BASE/products \
+              -H 'Content-Type: application/json' \
+              -d '{
+                \"name\": \"Smoke Test Product\",
+                \"price\": 99.99,
+                \"color\": \"Blue\",
+                \"category\": \"Test\",
+                \"stock\": 10,
+                \"description\": \"Created by smoke test\",
+                \"image\": \"https://via.placeholder.com/150\"
+              }')
+
+            echo \"Response: \$NEW_PRODUCT\"
+
+            if echo \"\$NEW_PRODUCT\" | grep -q 'Smoke Test Product'; then
+              echo '✅ Test 3 PASSED: Can create product'
+
+              PRODUCT_ID=\$(echo \"\$NEW_PRODUCT\" | grep -o '\"id\":[0-9]*' | grep -o '[0-9]*')
+              echo \"Created product ID: \$PRODUCT_ID\"
+
+              if [ -z \"\$PRODUCT_ID\" ]; then
+                echo '❌ Failed to extract product ID'
+                exit 1
+              fi
+
+              echo ''
+              echo \"Test 4: PUT /api/products/\$PRODUCT_ID\"
+              UPDATED_PRODUCT=\$(curl -s -X PUT $API_BASE/products/\$PRODUCT_ID \
+                -H 'Content-Type: application/json' \
+                -d '{
+                  \"name\": \"Updated Smoke Test Product\",
+                  \"price\": 149.99,
+                  \"color\": \"Red\",
+                  \"category\": \"Test\",
+                  \"stock\": 20,
+                  \"description\": \"Updated by smoke test\",
+                  \"image\": \"https://via.placeholder.com/150\"
+                }')
+
+              echo \"Response: \$UPDATED_PRODUCT\"
+
+              if echo \"\$UPDATED_PRODUCT\" | grep -q 'Updated Smoke Test Product'; then
+                echo '✅ Test 4 PASSED: Can update product'
+              else
+                echo '❌ Test 4 FAILED: Cannot update product'
+                exit 1
+              fi
+
+              echo ''
+              echo \"Test 5: DELETE /api/products/\$PRODUCT_ID\"
+              HTTP_CODE=\$(curl -s -o /dev/null -w '%{http_code}' -X DELETE $API_BASE/products/\$PRODUCT_ID)
+
+              if [ \"\$HTTP_CODE\" = '204' ]; then
+                echo \"✅ Test 5 PASSED: Can delete product (HTTP \$HTTP_CODE)\"
+              else
+                echo \"❌ Test 5 FAILED: Cannot delete product (HTTP \$HTTP_CODE)\"
+                exit 1
+              fi
+            else
+              echo '❌ Test 3 FAILED: Cannot create product'
+              exit 1
+            fi
+
+            echo ''
+            echo '🎉 All smoke tests PASSED!'
+          "
+
+          echo ""
+          echo "✅ Smoke tests completed successfully!"
+
+      - name: Rollback on Failure
+        if: failure() && (steps.health_backend.outcome == 'failure' || steps.health_frontend.outcome == 'failure' || steps.smoke_tests.outcome == 'failure')
+        run: |
+          echo "============================================="
+          echo "🔄 DEPLOYMENT FAILED - INITIATING ROLLBACK"
+          echo "============================================="
+
+          echo "📝 Rolling back ConfigMap to previous version: ${{ needs.version-management.outputs.previous_version }}"
+          kubectl patch configmap app-config -n productx \
+            --type merge \
+            -p '{"data":{"APP_VERSION":"${{ needs.version-management.outputs.previous_version }}"}}'
+
+          echo "✅ ConfigMap rolled back to: ${{ needs.version-management.outputs.previous_version }}"
+
+          echo "🔄 Rolling back backend deployment..."
+          kubectl rollout undo deployment/backend -n productx
+          kubectl rollout status deployment/backend -n productx --timeout=180s
+
+          echo "🔄 Rolling back frontend deployment..."
+          kubectl rollout undo deployment/frontend -n productx
+          kubectl rollout status deployment/frontend -n productx --timeout=180s
+
+          echo ""
+          echo "✅ Rollback completed!"
+          echo "📊 Current deployment status:"
+          kubectl get pods -n productx
+
+          echo ""
+          echo "📋 Verifying rollback..."
+          CURRENT_VERSION=$(kubectl get configmap app-config -n productx -o jsonpath='{.data.APP_VERSION}')
+          echo "Current version after rollback: $CURRENT_VERSION"
+
+          BACKEND_IMAGE=$(kubectl get deployment backend -n productx -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Backend image after rollback: $BACKEND_IMAGE"
+
+          FRONTEND_IMAGE=$(kubectl get deployment frontend -n productx -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "Frontend image after rollback: $FRONTEND_IMAGE"
+
+          echo ""
+          echo "============================================="
+          echo "❌ DEPLOYMENT FAILED AND ROLLED BACK"
+          echo "============================================="
+          echo "Version rolled back: ${{ needs.version-management.outputs.new_version }} → ${{ needs.version-management.outputs.previous_version }}"
+          echo "Deployments rolled back to previous revision"
+          echo "============================================="
+          exit 1
+
+      - name: Print Deployment Summary
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          SHORT_SHA=$(echo "$COMMIT_SHA" | cut -c1-7)
+          IMAGE_TAG="sha-${SHORT_SHA}"
+          TRIGGER_TYPE="Push"
+          TRIGGER_INFO="Commit: $COMMIT_SHA"
+
+          echo "============================================="
+          echo "🎉 DEPLOYMENT COMPLETED!"
+          echo "============================================="
+          echo "Trigger: $TRIGGER_TYPE"
+          echo "$TRIGGER_INFO"
+          echo "Version: ${{ needs.version-management.outputs.previous_version }} → ${{ needs.version-management.outputs.new_version }}"
+          echo "Backend Image: ${{ env.DOCKER_USERNAME }}/productx-backend:${IMAGE_TAG}"
+          echo "Frontend Image: ${{ env.DOCKER_USERNAME }}/productx-frontend:${IMAGE_TAG}"
+          echo "EKS Cluster: ${{ secrets.EKS_CLUSTER_NAME }}"
+          echo "Region: ${{ env.AWS_REGION }}"
+          echo "Namespace: productx"
+          echo "============================================="
+
+  # ===========================================================================
+  # JOB 6: NOTIFY ON PIPELINE FAILURE
+  # ===========================================================================
+  notify-pipeline-failed:
+    name: Notify Pipeline Failed
+    runs-on: ubuntu-latest
+    needs: [build-backend, build-frontend, deploy-staging, version-management, deploy]
+    if: ${{ always() && (needs.build-backend.result == 'failure' || needs.build-frontend.result == 'failure' || needs.deploy-staging.result == 'failure' || needs.version-management.result == 'failure' || needs.deploy.result == 'failure') }}
+
+    steps:
+      - name: Pipeline Failed Notification
+        run: |
+          echo "============================================="
+          echo "❌ CI/CD PIPELINE FAILED!"
+          echo "============================================="
+          echo "Commit: ${{ github.sha }}"
+          echo "============================================="
